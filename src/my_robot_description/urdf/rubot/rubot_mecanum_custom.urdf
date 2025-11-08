@@ -185,7 +185,7 @@
       <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
     </inertial>
   </link>
-  <!-- LIDAR base_scan -->
+<!-- LIDAR base_scan -->
   <link name="base_scan">
     <visual>
       <origin rpy="0 0 3.14" xyz="0 0 0"/>
@@ -213,7 +213,8 @@
     <parent link="base_link"/>
     <child link="base_scan"/>
   </joint>
-  <!-- Box part -->
+
+<!-- Box part -->
   <joint name="joint_part" type="fixed">
     <origin rpy="0 0 0" xyz="-0.10 0.0 0.08"/>
     <parent link="base_link"/>
@@ -239,6 +240,35 @@
       <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
     </inertial>
   </link>
+  
+<!-- Add a 3D-part on top with a fixed joint -->
+  <joint name="joint_top_part" type="fixed">
+    <origin rpy="0 0 0" xyz="0.0 0.0 0.13"/>
+    <parent link="base_link"/>
+    <child link="top_part"/>
+  </joint>
+  <link name="top_part">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <!-- <mesh filename="file://$(find my_robot_description)/meshes/rubot/top_part.stl" scale="0.001 0.001 0.001"/> -->
+        <box size="0.06 0.04 0.02"/>
+      </geometry>
+      <material name="sunflower"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.06 0.04 0.02"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.08"/>
+      <inertia ixx="0.0005" ixy="0.0" ixz="0.0" iyy="0.0007" iyz="0.0" izz="0.0009"/>
+    </inertial>
+  </link>
+
   <!-- Mecanum drive controller -->
   <gazebo>
         <plugin name="mecanum_controller" filename="libgazebo_ros_planar_move.so">
@@ -344,6 +374,9 @@
     <material>Gazebo/DarkGrey</material>
   </gazebo>
   <gazebo reference="part">
+    <material>Gazebo/Yellow</material>
+  </gazebo>
+  <gazebo reference="top_part">
     <material>Gazebo/Yellow</material>
   </gazebo>
   <gazebo reference="upper_left_wheel">
