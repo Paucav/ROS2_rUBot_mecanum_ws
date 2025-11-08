@@ -243,29 +243,85 @@
   
 <!-- Add a 3D-part on top with a fixed joint -->
   <joint name="joint_top_part" type="fixed">
-    <origin rpy="0 0 0" xyz="0.0 0.0 0.13"/>
+    <origin rpy="0 0 0" xyz="0.1 0.0 0.092"/>
     <parent link="base_link"/>
     <child link="top_part"/>
+    <axis xyz="0 1 0"/>
   </joint>
   <link name="top_part">
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <!-- <mesh filename="file://$(find my_robot_description)/meshes/rubot/top_part.stl" scale="0.001 0.001 0.001"/> -->
-        <box size="0.06 0.04 0.02"/>
+        <box size="0.05 0.05 0.009"/>
       </geometry>
       <material name="sunflower"/>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <box size="0.06 0.04 0.02"/>
+        <box size="0.05 0.05 0.009"/>
       </geometry>
     </collision>
     <inertial>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <mass value="0.08"/>
       <inertia ixx="0.0005" ixy="0.0" ixz="0.0" iyy="0.0007" iyz="0.0" izz="0.0009"/>
+    </inertial>
+  </link>
+
+<!-- Cylindrical part on top -->
+  <joint name="joint_arm_base" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0.01"/>
+    <parent link="top_part"/>
+    <child link="arm_base"/>
+  </joint>
+
+  <link name="arm_base">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0.03"/>
+      <geometry>
+        <cylinder radius="0.012" length="0.1"/>
+      </geometry>
+      <material name="emerald"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0.03"/>
+      <geometry>
+        <cylinder radius="0.012" length="0.1"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0.03"/>
+      <mass value="0.05"/>
+      <inertia ixx="0.0001" ixy="0.0" ixz="0.0" iyy="0.0001" iyz="0.0" izz="0.00005"/>
+    </inertial>
+  </link>
+
+<!-- Second cylindrical segment -->
+  <joint name="joint_arm_upper" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0.098"/>
+    <parent link="arm_base"/>
+    <child link="arm_upper"/>
+  </joint>
+
+  <link name="arm_upper">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0.032"/>
+      <geometry>
+        <cylinder radius="0.012" length="0.1"/>
+      </geometry>
+      <material name="sunflower"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0.032"/>
+      <geometry>
+        <cylinder radius="0.012" length="0.1"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0.032"/>
+      <mass value="0.05"/>
+      <inertia ixx="0.00008" ixy="0.0" ixz="0.0" iyy="0.00008" iyz="0.0" izz="0.00004"/>
     </inertial>
   </link>
 
