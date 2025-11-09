@@ -20,6 +20,9 @@
   <material name="emerald">
     <color rgba="0.180 0.800 0.443 1.0"/>
   </material>
+  <material name="red">
+  <color rgba="1.0 0 0 1.0"/>
+  </material>
 
 <!-- base_footprint reference frame without inertia is needed -->
   <link name="base_footprint"/>
@@ -325,6 +328,34 @@
     </inertial>
   </link>
 
+<!-- LED indicator on top of the top_part -->
+<joint name="joint_led" type="fixed">
+  <origin rpy="0 0 0" xyz="0 0 0.012"/>
+  <parent link="top_part"/>
+  <child link="led_indicator"/>
+</joint>
+
+<link name="led_indicator">
+  <visual>
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <geometry>
+      <box size="0.02 0.02 0.005"/>
+    </geometry>
+    <material name="red"/>
+  </visual>
+  <collision>
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <geometry>
+      <box size="0.02 0.02 0.005"/>
+    </geometry>
+  </collision>
+  <inertial>
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <mass value="0.005"/>
+    <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+  </inertial>
+</link>
+
   <!-- Mecanum drive controller -->
   <gazebo>
         <plugin name="mecanum_controller" filename="libgazebo_ros_planar_move.so">
@@ -435,6 +466,12 @@
   <gazebo reference="top_part">
     <material>Gazebo/Yellow</material>
   </gazebo>
+  <gazebo reference="arm_base">
+    <material>Gazebo/Green</material>
+  </gazebo>
+  <gazebo reference="arm_upper">
+    <material>Gazebo/Yellow</material>
+  </gazebo>
   <gazebo reference="upper_left_wheel">
     <material>Gazebo/LightGrey</material>
     <mu1>0.5</mu1>
@@ -480,34 +517,3 @@
     <fdir1>1 0 0</fdir1>
   </gazebo>
 </robot>
-<!-- LED indicator on top of the top_part -->
-<joint name="joint_led" type="fixed">
-  <origin rpy="0 0 0" xyz="0 0 0.012"/>
-  <parent link="top_part"/>
-  <child link="led_indicator"/>
-</joint>
-
-<link name="led_indicator">
-  <visual>
-    <origin rpy="0 0 0" xyz="0 0 0"/>
-    <geometry>
-      <box size="0.02 0.02 0.005"/>
-    </geometry>
-    <material name="red"/>
-  </visual>
-  <collision>
-    <origin rpy="0 0 0" xyz="0 0 0"/>
-    <geometry>
-      <box size="0.02 0.02 0.005"/>
-    </geometry>
-  </collision>
-  <inertial>
-    <origin rpy="0 0 0" xyz="0 0 0"/>
-    <mass value="0.005"/>
-    <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
-  </inertial>
-</link>
-
-<material name="red">
-  <color rgba="1.0 0 0 1.0"/>
-</material>
