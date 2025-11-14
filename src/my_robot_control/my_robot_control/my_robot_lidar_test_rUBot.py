@@ -13,7 +13,6 @@ class LidarTest(Node):
 
     def __init__(self):
         super().__init__('lidar_test_rubot_node')
-
         self.subscription = self.create_subscription(
             LaserScan,
             '/scan',
@@ -25,17 +24,20 @@ class LidarTest(Node):
     def listener_callback(self, scan: LaserScan):
         current_time = self.get_clock().now().seconds_nanoseconds()[0]
         if current_time - self.last_print_time < 1:
-            return  # imprimeix com a màxim cada segon
+            return  # Skip printing if less than 1 second has passed
 
-        # Converteix a graus amb més precisió
+        # Converteix a graus amb precisió i aplica offset +180°
         angle_min_deg = math.degrees(scan.angle_min)
-        angle_increment_deg = math.degrees(scan.angle_increment)
+        angle_inc_deg = math.degrees(scan.angle_increment)
         n_samples = len(scan.ranges)
 
-        # Calcula la llista d'angles corresponents a cada index i normalitza a [-180,180)
-        angles_deg = [normalize_angle_deg(angle_min_deg + i * angle_increment_deg) for i in range(n_samples)]
+        # Angles amb offset de +180° i normalitzats a [-180,180)
+        angles_deg = [
+            normalize_angle_deg(angle_min_deg + i * angle_inc_deg + 180.0)
+            for i in range(n_samples)
+        ]
 
-        # Funció auxiliar: trobar l'índex amb l'angle més proper a target_deg
+        # Troba l'índex més proper a un angle objectiu
         def find_closest_index(target_deg):
             best_i = None
             best_diff = float('inf')
@@ -46,10 +48,10 @@ class LidarTest(Node):
                     best_i = i
             return best_i
 
-        # Índexs buscats (això és robust passi el que passi amb angle_min)
+        # Índexs per 0, -90 i +90 graus
         idx_0 = find_closest_index(0.0)
-        idx_pos90 = find_closest_index(90.0)
         idx_neg90 = find_closest_index(-90.0)
+        idx_pos90 = find_closest_index(90.0)
 
         # Funció per obtenir distància segura
         def safe_distance_at(idx):
@@ -65,26 +67,36 @@ class LidarTest(Node):
             return d
 
         dist_0_deg = safe_distance_at(idx_0)
-        dist_pos90_deg = safe_distance_at(idx_pos90)
         dist_neg90_deg = safe_distance_at(idx_neg90)
+        dist_pos90_deg = safe_distance_at(idx_pos90)
 
         self.get_logger().info("---- LIDAR readings ----")
-        if math.isfinite(dist_0_deg):
-            self.get_logger().info(f"Distance at 0° (index {idx_0}, angle {angles_deg[idx_0]:.2f}°): {dist_0_deg:.2f} m")
+        # Mostrem també l'index i l'angle corresponent per verificar
+        if idx_0 is not None:
+            if math.isfinite(dist_0_deg):
+                self.get_logger().info(f"Distance at 0° (index {idx_0}, angle {angles_deg[idx_0]:.2f}°): {dist_0_deg:.2f} m")
+            else:
+                self.get_logger().info(f"No valid reading at 0° (closest index {idx_0}, angle {angles_deg[idx_0]:.2f}°)")
         else:
-            self.get_logger().info(f"No valid reading at 0° (closest index {idx_0}, angle {angles_deg[idx_0]:.2f}°)" if idx_0 is not None else "No valid index for 0°")
+            self.get_logger().info("No valid index found for 0°")
 
-        if math.isfinite(dist_pos90_deg):
-            self.get_logger().info(f"Distance at +90° (index {idx_pos90}, angle {angles_deg[idx_pos90]:.2f}°): {dist_pos90_deg:.2f} m")
+        if idx_neg90 is not None:
+            if math.isfinite(dist_neg90_deg):
+                self.get_logger().info(f"Distance at -90° (index {idx_neg90}, angle {angles_deg[idx_neg90]:.2f}°): {dist_neg90_deg:.2f} m")
+            else:
+                self.get_logger().info(f"No valid reading at -90° (closest index {idx_neg90}, angle {angles_deg[idx_neg90]:.2f}°)")
         else:
-            self.get_logger().info(f"No valid reading at +90° (closest index {idx_pos90}, angle {angles_deg[idx_pos90]:.2f}°)" if idx_pos90 is not None else "No valid index for +90°")
+            self.get_logger().info("No valid index found for -90°")
 
-        if math.isfinite(dist_neg90_deg):
-            self.get_logger().info(f"Distance at -90° (index {idx_neg90}, angle {angles_deg[idx_neg90]:.2f}°): {dist_neg90_deg:.2f} m")
+        if idx_pos90 is not None:
+            if math.isfinite(dist_pos90_deg):
+                self.get_logger().info(f"Distance at +90° (index {idx_pos90}, angle {angles_deg[idx_pos90]:.2f}°): {dist_pos90_deg:.2f} m")
+            else:
+                self.get_logger().info(f"No valid reading at +90° (closest index {idx_pos90}, angle {angles_deg[idx_pos90]:.2f}°)")
         else:
-            self.get_logger().info(f"No valid reading at -90° (closest index {idx_neg90}, angle {angles_deg[idx_neg90]:.2f}°)" if idx_neg90 is not None else "No valid index for -90°")
+            self.get_logger().info("No valid index found for +90°")
 
-        # Troba la distància mínima entre valors vàlids i obté el seu angle
+        # Troba la distància mínima entre valors vàlids (usant offsets ja aplicats)
         valid_entries = []
         for i, d in enumerate(scan.ranges):
             if not math.isfinite(d):
@@ -93,7 +105,6 @@ class LidarTest(Node):
                 continue
             if d < scan.range_min or d > scan.range_max:
                 continue
-            # opcional: filtrar per sector si vols (ara busquem globalment)
             valid_entries.append((d, i))
 
         if not valid_entries:
