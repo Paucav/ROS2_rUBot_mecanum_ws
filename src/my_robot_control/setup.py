@@ -27,6 +27,7 @@ setup(
             'my_robot_lidar_test_rUBot_exec = my_robot_control.my_robot_lidar_test_rUBot:main',
             'my_robot_lidar_test_LIMO_exec = my_robot_control.my_robot_lidar_test_LIMO:main',
             'my_robot_control_exec = my_robot_control.my_robot_control:main',
+            'my_robot_control_lidar_exec = my_robot_control.my_robot_control_lidar:main',
             'my_robot_selfcontrol_exec = my_robot_control.my_robot_selfcontrol:main',
             'my_robot_selfcontrol_LIMO_exec = my_robot_control.my_robot_selfcontrol_LIMO:main',
             'my_robot_wallfollower_exec = my_robot_control.my_robot_wallfollower:main',
