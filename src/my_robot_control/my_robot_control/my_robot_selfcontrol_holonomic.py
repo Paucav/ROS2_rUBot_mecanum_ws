@@ -8,7 +8,7 @@ import math
 class RobotSelfControl(Node):
 
     def __init__(self):
-        super().__init__('robot_selfcontrol_node')
+        super().__init__('robot_selfcontrol_holonomic_node')
 
         # Configurable parameters
         self.declare_parameter('distance_limit', 0.3)
