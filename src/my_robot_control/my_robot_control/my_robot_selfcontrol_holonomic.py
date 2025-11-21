@@ -34,24 +34,38 @@ class RobotSelfControl(Node):
             LaserScan,
             '/scan',
             self.laser_callback,
-            10  # Default QoS depth
+            10
         )
+
         self.start_time = self.get_clock().now().nanoseconds * 1e-9
         self._shutting_down = False
         self._last_info_time = self.start_time
         self._last_speed_time = self.start_time
 
+        # Nuevos para giro 90°
+        self._turning = False
+        self._turn_start_time = 0.0
+        self._turn_duration = 1.57 / self._rotationSpeed  # 90° ≈ 1.57 rad
+
     def timer_callback(self):
         if self._shutting_down:
             return
+
         now_sec = self.get_clock().now().nanoseconds * 1e-9
         elapsed_time = now_sec - self.start_time
 
+        # Control del giro 90°
+        if self._turning:
+            if now_sec - self._turn_start_time >= self._turn_duration:
+                self._turning = False
+                self._msg.linear.x = self._forwardSpeed * self._speedFactor
+                self._msg.angular.z = 0.0
         self._cmdVel.publish(self._msg)
 
         if now_sec - self._last_speed_time >= 1:
             self.get_logger().info(f"Vx: {self._msg.linear.x:.2f} m/s, w: {self._msg.angular.z:.2f} rad/s | Time: {elapsed_time:.1f}s")
             self._last_speed_time = now_sec
+
         if elapsed_time >= self._time_to_stop:
             self.stop()
             self.timer.cancel()
@@ -59,17 +73,16 @@ class RobotSelfControl(Node):
             rclpy.try_shutdown()
 
     def laser_callback(self, scan):
-        if self._shutting_down:
+        if self._shutting_down or self._turning:
             return
 
-        angle_min_deg = scan.angle_min * 180.0 / 3.14159
-        angle_increment_deg = scan.angle_increment * 180.0 / 3.14159
+        angle_min_deg = scan.angle_min * 180.0 / math.pi
+        angle_increment_deg = scan.angle_increment * 180.0 / math.pi
 
-        # Filter valid readings within [-150°, 150°]
+        # Filtrar lecturas válidas [-150°, 150°]
         custom_range = []
         for i, distance in enumerate(scan.ranges):
-            # Angle on robot
-            angle_robot_deg =angle_min_deg + i * angle_increment_deg
+            angle_robot_deg = angle_min_deg + i * angle_increment_deg
             if angle_robot_deg > 180.0:
                 angle_robot_deg -= 360.0
             if not math.isfinite(distance) or distance <= 0.0:
@@ -78,14 +91,12 @@ class RobotSelfControl(Node):
                 continue
             if -150 < angle_robot_deg < 150:
                 custom_range.append((distance, angle_robot_deg))
-            else:
-                continue
 
         if not custom_range:
             return
-        closest_distance, angle_closest_distance = min(custom_range)
 
-        # Determine zone
+        closest_distance, angle_closest_distance = min(custom_range)
+        # Determinar zona
         if -45 <= angle_closest_distance <= 45:
             zone = "FRONT"
         elif 45 < angle_closest_distance <= 110:
@@ -104,26 +115,17 @@ class RobotSelfControl(Node):
             self.get_logger().info(f"[DETECTION] Distance: {closest_distance:.2f} m | Angle: {angle_closest_distance:.0f}° | Zone: {zone}")
             self._last_info_time = now
 
-        # React to obstacle
+        # Reaccionar a obstáculo iniciando giro 90°
         if closest_distance < self._distanceLimit:
-            if zone == "FRONT":
-                self._msg.linear.x = -self._forwardSpeed * self._speedFactor
-                self._msg.angular.z = self._rotationSpeed * self._speedFactor
+            self._turning = True
+            self._turn_start_time = self.get_clock().now().nanoseconds * 1e-9
+            self._msg.linear.x = 0.0
+            if zone == "RIGHT":
+                self._msg.angular.z = self._rotationSpeed
             elif zone == "LEFT":
-                self._msg.linear.x = -self._forwardSpeed * self._speedFactor
-                self._msg.angular.z = -self._rotationSpeed * self._speedFactor
-            elif zone == "RIGHT":
-                self._msg.linear.x = -self._forwardSpeed * self._speedFactor
-                self._msg.angular.z = self._rotationSpeed * self._speedFactor
-            elif zone in ["BACK_LEFT", "BACK_RIGHT"]:
-                self._msg.linear.x = self._forwardSpeed * self._speedFactor
-                self._msg.angular.z = 0.0
-            else:
-                self._msg.linear.x = self._forwardSpeed * self._speedFactor
-                self._msg.angular.z = 0.0
-        else:
-            self._msg.linear.x = self._forwardSpeed * self._speedFactor
-            self._msg.angular.z = 0.0
+                self._msg.angular.z = -self._rotationSpeed
+            else:  # frontal o por defecto
+                self._msg.angular.z = self._rotationSpeed
 
     def stop(self):
         self._shutting_down = True
@@ -132,6 +134,7 @@ class RobotSelfControl(Node):
         stop_msg.angular.z = 0.0
         self._cmdVel.publish(stop_msg)
         rclpy.spin_once(self, timeout_sec=0.1)
+
 
 def main(args=None):
     rclpy.init(args=args)
