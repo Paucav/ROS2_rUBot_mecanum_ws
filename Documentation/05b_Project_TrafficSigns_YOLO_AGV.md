@@ -111,5 +111,19 @@ You can make a prediction of the signal that the robot find on its path to targe
     
 ## **5. Robot actuation after prediction**
 
-In TheConstruct environment:
-- Once the traffic signal is identified, the robot has to actuate according to the detected traffic signal when its position is close (i.e. 1m) to the signal.
+Consider:
+- Predefined map positions of traffic signs. These coordinates MUST be in the same reference frame as the robot's odometry (/odom) or /map (depending on your setup).
+- If YOLO detects a sign AND the robot is within "front_distance" parameter value of the corresponding sign position, then the robot reacts.
+- Specify the sign positions in a `yolo_signs.yaml` file as follows:
+    ```yaml
+    sign_positions:
+      STOP:      [2.30, -1.00]   # STOP sign position (x, y)
+      Ceda:      [5.00,  0.20]   # Yield (Ceda el paso)
+      Derecha:   [7.10,  1.40]   # Turn right
+      Izquierda: [7.10, -1.40]   # Turn left
+      Prohibido: [9.00,  0.00]   # No entry / forbidden
+    ````
+- To launch the robot actuation node after prediction, use:
+    ````shell
+    ros2 launch my_robot_ai_identification rubot_navigation_yolo.launch.py
+    ````
