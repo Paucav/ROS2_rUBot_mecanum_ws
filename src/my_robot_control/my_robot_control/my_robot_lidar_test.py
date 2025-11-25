@@ -61,6 +61,7 @@ class LidarTest(Node):
                 custom_range.append((distance, angle_robot_deg))
             else:
                 continue
+                
 
         if not custom_range:
             return
