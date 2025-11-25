@@ -1,150 +1,291 @@
+import math
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist
-import math
 
 
-class RobotSelfControl(Node):
-
+class WallFollower(Node):
     def __init__(self):
-        super().__init__('robot_selfcontrol_holonomic_node')
+        super().__init__('wall_follower_node')
 
-        # Configurable parameters
-        self.declare_parameter('distance_limit', 0.3)
-        self.declare_parameter('speed_factor', 1.0)
-        self.declare_parameter('forward_speed', 0.2)
-        self.declare_parameter('rotation_speed', 0.3)
-        self.declare_parameter('time_to_stop', 5.0)
+        # Parameters
+        self.declare_parameter('distance_limit', 0.5)    # desired distance to right wall
+        self.declare_parameter('forward_speed', 0.20)    # linear x speed
+        self.declare_parameter('lateral_speed', 0.20)    # linear y speed (holonomic)
+        self.declare_parameter('time_to_stop', 30.0)     # auto-stop
+        self.declare_parameter('tolerance', 0.05)        # band around base_distance
 
-        self._distanceLimit = self.get_parameter('distance_limit').value
-        self._speedFactor = self.get_parameter('speed_factor').value
-        self._forwardSpeed = self.get_parameter('forward_speed').value
-        self._rotationSpeed = self.get_parameter('rotation_speed').value
-        self._time_to_stop = self.get_parameter('time_to_stop').value
+        self.base_distance = float(self.get_parameter('distance_limit').value)
+        self.v_lin = float(self.get_parameter('forward_speed').value)
+        self.v_lat = float(self.get_parameter('lateral_speed').value)
+        self.time_to_stop = float(self.get_parameter('time_to_stop').value)
+        self.tol = float(self.get_parameter('tolerance').value)
 
-        self._msg = Twist()
-        self._msg.linear.x = self._forwardSpeed * self._speedFactor
-        self._msg.angular.z = 0.0
+        # Last commanded twist (will be published periodically)
+        self.cmd = Twist()
 
-        self._cmdVel = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.timer = self.create_timer(0.05, self.timer_callback)
-
+        # ROS 2 entities
         self.subscription = self.create_subscription(
-            LaserScan,
-            '/scan',
-            self.laser_callback,
-            10
+            LaserScan, '/scan', self.laser_callback, qos_profile_sensor_data
+        )
+        self.publisher = self.create_publisher(Twist, '/cmd_vel', 10)
+
+        # Timers
+        self.info_timer = self.create_timer(1.0, self.log_info)
+        self.stop_timer = self.create_timer(0.05, self.stop_watchdog)
+
+        # Periodic cmd_vel publisher at 10 Hz (0.1 s)
+        self.cmd_timer = self.create_timer(0.1, self.cmd_publish_timer_cb)
+
+        self._state_action = "Idle"
+        self._last_action_logged = None
+        self._shutting_down = False
+
+        self.start_time_s = self.get_clock().now().nanoseconds * 1e-9
+
+        self.get_logger().info(
+            "WallFollower HOLONOMIC (RIGHT wall: FRONT→strafe LEFT, "
+            "FRONT-RIGHT→forward, BACK-RIGHT→strafe RIGHT)."
         )
 
-        self.start_time = self.get_clock().now().nanoseconds * 1e-9
-        self._shutting_down = False
-        self._last_info_time = self.start_time
-        self._last_speed_time = self.start_time
+    #--------------------------------------------------------------------
+    def stop_watchdog(self):
+        """Stop the robot after time_to_stop seconds."""
+        if self._shutting_down:
+            return
+        now = self.get_clock().now().nanoseconds * 1e-9
+        if now - self.start_time_s >= self.time_to_stop:
+            self.get_logger().info("Stopping due to timeout.")
+            self.stop()
 
-        # Nuevos para giro 90°
-        self._turning = False
-        self._turn_start_time = 0.0
-        self._turn_duration = 1.57 / self._rotationSpeed  # 90° ≈ 1.57 rad
+    #--------------------------------------------------------------------
+    def stop(self):
+        """Safe stop: set cmd to zero Twist, try to publish once, stop timers."""
+        self._shutting_down = True
 
-    def timer_callback(self):
+        # Set last command to zero
+        self.cmd = Twist()
+
+        # Try a final publish (publisher may still be valid even if shutdown started)
+        try:
+            self.publisher.publish(self.cmd)
+        except Exception:
+            # Context/publisher may already be invalid -> ignore
+            pass
+
+        # Cancel timers safely
+        for t in [self.info_timer, self.stop_timer, self.cmd_timer]:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+
+    #--------------------------------------------------------------------
+    def cmd_publish_timer_cb(self):
+        """Periodic publisher: send the latest cmd_vel at 10 Hz."""
         if self._shutting_down:
             return
 
-        now_sec = self.get_clock().now().nanoseconds * 1e-9
-        elapsed_time = now_sec - self.start_time
+        try:
+            self.publisher.publish(self.cmd)
+        except Exception:
+            # If the context or publisher is invalid, ignore
+            pass
 
-        # Control del giro 90°
-        if self._turning:
-            if now_sec - self._turn_start_time >= self._turn_duration:
-                self._turning = False
-                self._msg.linear.x = self._forwardSpeed * self._speedFactor
-                self._msg.angular.z = 0.0
-        self._cmdVel.publish(self._msg)
-
-        if now_sec - self._last_speed_time >= 1:
-            self.get_logger().info(f"Vx: {self._msg.linear.x:.2f} m/s, w: {self._msg.angular.z:.2f} rad/s | Time: {elapsed_time:.1f}s")
-            self._last_speed_time = now_sec
-
-        if elapsed_time >= self._time_to_stop:
-            self.stop()
-            self.timer.cancel()
-            self.get_logger().info("Robot stopped")
-            rclpy.try_shutdown()
-
+    #--------------------------------------------------------------------
     def laser_callback(self, scan):
-        if self._shutting_down or self._turning:
+        """Compute control action from LIDAR and update self.cmd."""
+        if self._shutting_down:
             return
 
-        angle_min_deg = scan.angle_min * 180.0 / math.pi
-        angle_increment_deg = scan.angle_increment * 180.0 / math.pi
+        angle_min = math.degrees(scan.angle_min)
+        angle_inc = math.degrees(scan.angle_increment)
 
-        # Filtrar lecturas válidas [-150°, 150°]
-        custom_range = []
-        for i, distance in enumerate(scan.ranges):
-            angle_robot_deg = angle_min_deg + i * angle_increment_deg
-            if angle_robot_deg > 180.0:
-                angle_robot_deg -= 360.0
-            if not math.isfinite(distance) or distance <= 0.0:
+        FRONT       = []
+        FR_RIGHT    = []
+        RIGHT       = []
+        BACK_RIGHT  = []
+
+        for i, d in enumerate(scan.ranges):
+            if not math.isfinite(d):
                 continue
-            if distance < scan.range_min or distance > scan.range_max:
+            if d < scan.range_min or d > scan.range_max:
                 continue
-            if -150 < angle_robot_deg < 150:
-                custom_range.append((distance, angle_robot_deg))
 
-        if not custom_range:
-            return
+            ang = angle_min + i * angle_inc
 
-        closest_distance, angle_closest_distance = min(custom_range)
-        # Determinar zona
-        if -45 <= angle_closest_distance <= 45:
-            zone = "FRONT"
-        elif 45 < angle_closest_distance <= 110:
-            zone = "LEFT"
-        elif -110 <= angle_closest_distance < -45:
-            zone = "RIGHT"
-        elif 110 < angle_closest_distance <= 150:
-            zone = "BACK_LEFT"
-        elif -150 <= angle_closest_distance < -110:
-            zone = "BACK_RIGHT"
+            if -20 <= ang <= 20:
+                FRONT.append(d)
+            elif -70 <= ang < -20:
+                FR_RIGHT.append(d)
+            elif -110 <= ang < -70:
+                RIGHT.append(d)
+            elif -160 <= ang < -110:
+                BACK_RIGHT.append(d)
+
+        # Minimal distances
+        min_front      = min(FRONT)      if FRONT      else float('inf')
+        min_fr_right   = min(FR_RIGHT)   if FR_RIGHT   else float('inf')
+        min_right      = min(RIGHT)      if RIGHT      else float('inf')
+        min_back_right = min(BACK_RIGHT) if BACK_RIGHT else float('inf')
+
+        twist = Twist()
+        action = ""
+
+        #----------------------------------------------------------
+        # 1) PARED DE FRENTE → SOLO LATERAL IZQUIERDA (holonómico)
+        #    No avanzamos en x hasta que desaparezca el obstáculo frontal
+        #----------------------------------------------------------
+        if min_front < self.base_distance:
+            twist.linear.x = 0.0
+            twist.linear.y = self.v_lat       # izquierda (y > 0)
+            twist.angular.z = 0.0
+            action = (
+                f"FRONT {min_front:.2f} m < {self.base_distance:.2f} → "
+                f"STRAFE LEFT buscando pared en FRONT-RIGHT"
+            )
+
+        #----------------------------------------------------------
+        # 2) PARED EN FRONT-RIGHT → MODO PRINCIPAL DE SEGUIR PARED
+        #    - Si está en banda → avanzar recto
+        #    - Si está muy cerca → avanzar + un poco a la izquierda
+        #    - Si está lejos → avanzar + un poco a la derecha
+        #----------------------------------------------------------
+        elif math.isfinite(min_fr_right):
+            error_fr = min_fr_right - self.base_distance
+
+            if abs(error_fr) <= self.tol:
+                # Correcto: seguir recto
+                twist.linear.x = self.v_lin
+                twist.linear.y = 0.0
+                twist.angular.z = 0.0
+                action = (
+                    f"FR_RIGHT OK ({min_fr_right:.2f} m ≈ "
+                    f"{self.base_distance:.2f}±{self.tol:.2f}) → FORWARD"
+                )
+
+            elif error_fr < 0:
+                # Demasiado cerca → nos separamos un poco (izq)
+                twist.linear.x = self.v_lin * 0.5
+                twist.linear.y = self.v_lat * 0.5
+                twist.angular.z = 0.0
+                action = (
+                    f"FR_RIGHT muy CERCA ({min_fr_right:.2f} m) → "
+                    f"forward + suave LEFT (separarse de la pared)"
+                )
+
+            else:
+                # Demasiado lejos → nos acercamos (derecha)
+                twist.linear.x = self.v_lin * 0.5
+                twist.linear.y = -self.v_lat * 0.5
+                twist.angular.z = 0.0
+                action = (
+                    f"FR_RIGHT lejos ({min_fr_right:.2f} m) → "
+                    f"forward + suave RIGHT (acercarse a la pared)"
+                )
+
+        #----------------------------------------------------------
+        # 3) PARED VISTA EN RIGHT → fallback si no hay FRONT-RIGHT
+        #    Usamos la misma idea pero con el sector RIGHT
+        #----------------------------------------------------------
+        elif math.isfinite(min_right):
+            error_r = min_right - self.base_distance
+
+            if abs(error_r) <= self.tol:
+                twist.linear.x = self.v_lin
+                twist.linear.y = 0.0
+                twist.angular.z = 0.0
+                action = (
+                    f"RIGHT OK ({min_right:.2f} m ≈ "
+                    f"{self.base_distance:.2f}±{self.tol:.2f}) → FORWARD"
+                )
+
+            elif error_r < 0:
+                twist.linear.x = self.v_lin * 0.5
+                twist.linear.y = self.v_lat * 0.5
+                twist.angular.z = 0.0
+                action = (
+                    f"RIGHT muy CERCA ({min_right:.2f} m) → "
+                    f"forward + LEFT"
+                )
+
+            else:
+                twist.linear.x = self.v_lin * 0.5
+                twist.linear.y = -self.v_lat * 0.5
+                twist.angular.z = 0.0
+                action = (
+                    f"RIGHT lejos ({min_right:.2f} m) → "
+                    f"forward + RIGHT"
+                )
+
+        #----------------------------------------------------------
+        # 4) PARED SOLO EN BACK-RIGHT → NOS DESPLAZAMOS A LA DERECHA
+        #    para recuperar la pared en el lado derecho (como pedías)
+        #----------------------------------------------------------
+        elif math.isfinite(min_back_right):
+            error_br = min_back_right - self.base_distance
+
+            # Si está más lejos de lo deseado → ir claramente a la derecha
+            if error_br > self.tol:
+                twist.linear.x = self.v_lin * 0.3
+                twist.linear.y = -self.v_lat      # derecha (y < 0)
+                twist.angular.z = 0.0
+                action = (
+                    f"BACK-RIGHT lejos ({min_back_right:.2f} m) → "
+                    f"forward lento + STRAFE RIGHT para pegarse a la pared"
+                )
+            else:
+                # Más o menos bien pero algo retrasada: avanzar recto
+                twist.linear.x = self.v_lin
+                twist.linear.y = 0.0
+                twist.angular.z = 0.0
+                action = (
+                    f"BACK-RIGHT OK ({min_back_right:.2f} m) → "
+                    f"FORWARD (pared ligeramente atrás)"
+                )
+
+        #----------------------------------------------------------
+        # 5) NINGUNA PARED DETECTADA → ir hacia adelante suave
+        #----------------------------------------------------------
         else:
-            zone = "OUTSIDE FOV"
+            twist.linear.x = self.v_lin * 0.5
+            twist.linear.y = 0.0
+            twist.angular.z = 0.0
+            action = "Sin pared clara → FORWARD lento buscando pared a la derecha"
 
-        now = self.get_clock().now().nanoseconds * 1e-9
-        if now - self._last_info_time >= 1:
-            self.get_logger().info(f"[DETECTION] Distance: {closest_distance:.2f} m | Angle: {angle_closest_distance:.0f}° | Zone: {zone}")
-            self._last_info_time = now
+        # Update last commanded twist (periodic timer will publish it)
+        self.cmd = twist
 
-        # Reaccionar a obstáculo iniciando giro 90°
-        if closest_distance < self._distanceLimit:
-            self._turning = True
-            self._turn_start_time = self.get_clock().now().nanoseconds * 1e-9
-            self._msg.linear.x = 0.0
-            if zone == "RIGHT":
-                self._msg.angular.z = self._rotationSpeed
-            elif zone == "LEFT":
-                self._msg.angular.z = -self._rotationSpeed
-            else:  # frontal o por defecto
-                self._msg.angular.z = self._rotationSpeed
+        # Logging (only on change)
+        if action != self._last_action_logged:
+            self.get_logger().info(action if action else "No action (stopped).")
+            self._last_action_logged = action
 
-    def stop(self):
-        self._shutting_down = True
-        stop_msg = Twist()
-        stop_msg.linear.x = 0.0
-        stop_msg.angular.z = 0.0
-        self._cmdVel.publish(stop_msg)
-        rclpy.spin_once(self, timeout_sec=0.1)
+        self._state_action = action if action else "Stopped (no wall detected)"
+
+    #--------------------------------------------------------------------
+    def log_info(self):
+        if not self._shutting_down:
+            self.get_logger().info(self._state_action)
 
 
 def main(args=None):
     rclpy.init(args=args)
-    robot = RobotSelfControl()
+    node = WallFollower()
     try:
-        rclpy.spin(robot)
+        rclpy.spin(node)
     except KeyboardInterrupt:
-        pass
+        node.stop()
     finally:
-        robot.destroy_node()
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
+
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
