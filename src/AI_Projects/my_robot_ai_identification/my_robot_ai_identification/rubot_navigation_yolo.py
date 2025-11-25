@@ -14,6 +14,7 @@ from custom_msgs.msg import InferenceResult, Yolov8Inference
 from ament_index_python.packages import get_package_share_directory
 import os
 import math
+import yaml
 
 
 class YoloObjectDetection(Node):
@@ -27,11 +28,16 @@ class YoloObjectDetection(Node):
         self.declare_parameter('twist_frequency', 20.0)
 
         self.declare_parameter('front_distance', 1.0)
-        self.declare_parameter('sign_positions', {})
-
+        self.declare_parameter('sign_positions', '')  # ROS2 always stores it as a string
+        
         # Read parameters
         model_file = self.get_parameter('modelYolo').value
         self.image_topic = self.get_parameter('topic').value
+        sign_positions_str = self.get_parameter('sign_positions').value
+        # Translate in dictionary
+        self.sign_positions = yaml.safe_load(sign_positions_str)
+        if self.sign_positions is None:
+            self.sign_positions = {}
 
         self.twist_freq = float(self.get_parameter('twist_frequency').value)
         if self.twist_freq <= 0.0:
@@ -40,7 +46,6 @@ class YoloObjectDetection(Node):
         self.twist_period = 1.0 / self.twist_freq
 
         self.front_distance = float(self.get_parameter('front_distance').value)
-        self.sign_positions = self.get_parameter('sign_positions').value
 
         # ------------------- Model path (portable) -------------------
         package_path = get_package_share_directory('my_robot_ai_identification')
