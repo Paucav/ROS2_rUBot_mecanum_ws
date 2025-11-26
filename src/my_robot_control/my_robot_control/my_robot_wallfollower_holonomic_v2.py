@@ -171,7 +171,7 @@ class WallFollower(Node):
         #----------------------------------------------------------
         elif min_fr_right < self.base_distance:
             twist.linear.x = self.v_lin
-            twist.linear.y = 0.0
+            twist.linear.y = self.v_lin
             twist.angular.z = 0.0
             action = f"FRONT-RIGHT {min_fr_right:.2f} m → DIAGONAL"
 

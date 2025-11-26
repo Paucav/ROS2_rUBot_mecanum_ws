@@ -32,11 +32,13 @@ setup(
             'my_robot_selfcontrol_LIMO_exec = my_robot_control.my_robot_selfcontrol_LIMO:main',
             'my_robot_wallfollower_exec = my_robot_control.my_robot_wallfollower:main',
             'my_robot_wallfollower_holonomic_exec = my_robot_control.my_robot_wallfollower_holonomic:main',
+            'my_robot_wallfollower_holonomicv2_exec = my_robot_control.my_robot_selfcontrol_holonomicv2:main',
             'my_robot_wallfollower_LIMO_exec = my_robot_control.my_robot_wallfollower_LIMO:main',
             'my_robot_go2pose_exec = my_robot_control.my_robot_go2pose:main',
             'my_robot_selfcontrol_holonomic_exec = my_robot_control.my_robot_selfcontrol_holonomic:main',
             'my_robot_selfcontrol_stop_exec = my_robot_control.my_robot_selfcontrol_stop:main',
             'my_robot_selfcontrol_holonomicv2_exec = my_robot_control.my_robot_selfcontrol_holonomicv2:main',
+
 
         ],
     },
