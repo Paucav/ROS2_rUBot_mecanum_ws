@@ -38,6 +38,8 @@ setup(
             'my_robot_selfcontrol_holonomic_exec = my_robot_control.my_robot_selfcontrol_holonomic:main',
             'my_robot_selfcontrol_stop_exec = my_robot_control.my_robot_selfcontrol_stop:main',
             'my_robot_selfcontrol_holonomicv2_exec = my_robot_control.my_robot_selfcontrol_holonomicv2:main',
+            'my_robot_selfcontrol_holonomicv3_exec = my_robot_control.my_robot_selfcontrol_holonomicv3:main',
+
 
 
         ],
