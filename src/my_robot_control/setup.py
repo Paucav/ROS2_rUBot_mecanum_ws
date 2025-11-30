@@ -32,6 +32,7 @@ setup(
             'my_robot_selfcontrol_exec = my_robot_control.my_robot_selfcontrol:main',
             'my_robot_selfcontrol_LIMO_exec = my_robot_control.my_robot_selfcontrol_LIMO:main',
             'my_robot_wallfollower_exec = my_robot_control.my_robot_wallfollower:main',
+            'my_robot_wallfollowerv2_exec = my_robot_control.my_robot_wallfollowerv2:main',
             'my_robot_wallfollower_holonomic_exec = my_robot_control.my_robot_wallfollower_holonomic:main',
             'my_robot_wallfollower_holonomicv2_exec = my_robot_control.my_robot_wallfollower_holonomic_v2:main',
             'my_robot_wallfollower_LIMO_exec = my_robot_control.my_robot_wallfollower_LIMO:main',
