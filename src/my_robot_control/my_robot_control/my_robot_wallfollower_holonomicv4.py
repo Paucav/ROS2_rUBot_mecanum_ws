@@ -10,23 +10,24 @@ class WallFollower(Node):
     def __init__(self):
         super().__init__('wall_follower_node')
 
-        # Parameters
-        self.declare_parameter('distance_limit', 0.5)    # desired distance to right wall
-        self.declare_parameter('forward_speed', 0.20)    # linear speed
-        self.declare_parameter('turn_speed', 0.40)       # angular speed
+        # Parameters (pots ajustar-los via ROS params)
+        self.declare_parameter('distance_limit', 0.5)    # desired distance to walls
+        self.declare_parameter('forward_speed', 0.20)    # base linear speed (m/s)
         self.declare_parameter('time_to_stop', 30.0)     # auto-stop
-        self.declare_parameter('tolerance', 0.05)        # band around base_distance (RIGHT)
+        self.declare_parameter('tolerance', 0.05)        # tolerance band
 
         self.base_distance = float(self.get_parameter('distance_limit').value)
         self.v_lin = float(self.get_parameter('forward_speed').value)
-        self.v_ang = float(self.get_parameter('turn_speed').value)
         self.time_to_stop = float(self.get_parameter('time_to_stop').value)
         self.tol = float(self.get_parameter('tolerance').value)
 
-        # Last commanded twist (will be published periodically)
+        # Gains for correction (simple P-type behaviour)
+        self.k_corr = 1.0  # multiplica l'error per obtenir la correcció (scale)
+
+        # Last commanded twist (published periodically)
         self.cmd = Twist()
 
-        # ROS 2 entities
+        # ROS 2: subs i pub
         self.subscription = self.create_subscription(
             LaserScan, '/scan', self.laser_callback, qos_profile_sensor_data
         )
@@ -35,9 +36,7 @@ class WallFollower(Node):
         # Timers
         self.info_timer = self.create_timer(1.0, self.log_info)
         self.stop_timer = self.create_timer(0.05, self.stop_watchdog)
-
-        # Periodic cmd_vel publisher at 10 Hz (0.1 s)
-        self.cmd_timer = self.create_timer(0.1, self.cmd_publish_timer_cb)
+        self.cmd_timer = self.create_timer(0.1, self.cmd_publish_timer_cb)  # 10 Hz
 
         self._state_action = "Idle"
         self._last_action_logged = None
@@ -45,13 +44,14 @@ class WallFollower(Node):
 
         self.start_time_s = self.get_clock().now().nanoseconds * 1e-9
 
-        self.get_logger().info(
-            "WallFollower (RIGHT tol, BACK_RIGHT when closest) - differential drive."
-        )
+        # Estat de moviment actual (inicial: moure's endavant en X)
+        # valors: 'vx_pos' (cap amunt/endavant), 'vy_pos' (cap esquerra), etc.
+        self.current_motion = 'vx_pos'
 
-    #--------------------------------------------------------------------
+        self.get_logger().info("WallFollower (holonomic, no rotations) - iniciat.")
+
+    # ---------------------------
     def stop_watchdog(self):
-        """Stop the robot after time_to_stop seconds."""
         if self._shutting_down:
             return
         now = self.get_clock().now().nanoseconds * 1e-9
@@ -59,167 +59,225 @@ class WallFollower(Node):
             self.get_logger().info("Stopping due to timeout.")
             self.stop()
 
-    #--------------------------------------------------------------------
     def stop(self):
-        """Safe stop: set cmd to zero Twist, try to publish once, stop timers."""
         self._shutting_down = True
-
-        # Set last command to zero
         self.cmd = Twist()
-
-        # Try a final publish (publisher may still be valid even if shutdown started)
         try:
             self.publisher.publish(self.cmd)
         except Exception:
-            # Context/publisher may already be invalid -> ignore
             pass
-
-        # Cancel timers safely
         for t in [self.info_timer, self.stop_timer, self.cmd_timer]:
             try:
                 t.cancel()
             except Exception:
                 pass
 
-    #--------------------------------------------------------------------
     def cmd_publish_timer_cb(self):
-        """Periodic publisher: send the latest cmd_vel at 10 Hz."""
         if self._shutting_down:
             return
-
         try:
             self.publisher.publish(self.cmd)
         except Exception:
-            # If the context or publisher is invalid, ignore
             pass
 
-    #--------------------------------------------------------------------
-    def laser_callback(self, scan):
-        """Compute control action from LIDAR and update self.cmd."""
+    # ---------------------------
+    def get_sector_angles(self):
+        # Defineix límits angulars (graus) per sector respecte front = 0, augmentant cap a l'esquerra (+)
+        return {
+            'front': (-22.5, 22.5),
+            'front_right': (-67.5, -22.5),
+            'right': (-112.5, -67.5),
+            'back_right': (-157.5, -112.5),
+            'back': (157.5, -157.5),  # atravessa -180/180
+            'back_left': (112.5, 157.5),
+            'left': (67.5, 112.5),
+            'front_left': (22.5, 67.5),
+        }
+
+    def normalize_angle_deg(self, a):
+        a = ((a + 180.0) % 360.0) - 180.0
+        return a
+
+    def angle_in_sector(self, ang_deg, sector):
+        limits = self.get_sector_angles()[sector]
+        lo, hi = limits
+        ang = self.normalize_angle_deg(ang_deg)
+        if lo <= hi:
+            return lo <= ang <= hi
+        else:
+            return ang >= lo or ang <= hi
+
+    # ---------------------------
+    def laser_callback(self, scan: LaserScan):
         if self._shutting_down:
             return
 
         angle_min = math.degrees(scan.angle_min)
         angle_inc = math.degrees(scan.angle_increment)
 
-        FRONT       = []
-        FR_RIGHT    = []
-        RIGHT       = []
-        BACK_RIGHT  = []
+        sectors = {
+            'front': [], 'front_right': [], 'right': [], 'back_right': [],
+            'back': [], 'back_left': [], 'left': [], 'front_left': []
+        }
 
         for i, d in enumerate(scan.ranges):
             if not math.isfinite(d):
                 continue
             if d < scan.range_min or d > scan.range_max:
                 continue
-
             ang = angle_min + i * angle_inc
+            ang = self.normalize_angle_deg(ang)
+            for s in sectors:
+                if self.angle_in_sector(ang, s):
+                    sectors[s].append(d)
+                    break
 
-            if -20 <= ang <= 20:
-                FRONT.append(d)
-            elif -70 <= ang < -20:
-                FR_RIGHT.append(d)
-            elif -110 <= ang < -70:
-                RIGHT.append(d)
-            elif -160 <= ang < -110:
-                BACK_RIGHT.append(d)
-
-        # Minimal distances
-        min_front      = min(FRONT)      if FRONT      else float('inf')
-        min_fr_right   = min(FR_RIGHT)   if FR_RIGHT   else float('inf')
-        min_right      = min(RIGHT)      if RIGHT      else float('inf')
-        min_back_right = min(BACK_RIGHT) if BACK_RIGHT else float('inf')
+        mins = {s: (min(v) if v else float('inf')) for s, v in sectors.items()}
+        closest_sector = min(mins, key=lambda k: mins[k])
+        tol_presence = self.base_distance + self.tol + 0.01
+        present = {s: (mins[s] < tol_presence) for s in mins}
 
         twist = Twist()
         action = ""
 
-        #----------------------------------------------------------
-        # RULE 1: FRONT obstacle → turn left
-        #----------------------------------------------------------
-        if min_front < self.base_distance:
-            twist.linear.x = 0.0
+        def clamp(x, a, b):
+            return max(a, min(b, x))
+
+        def correction_for(error):
+            corr = self.k_corr * error
+            corr = clamp(corr, -self.v_lin, self.v_lin)
+            return corr
+
+        # ---------- Regles combinades (dos murs) - corregides segons la teva convenció d'eixos
+        # front + left -> moure's cap abaix (vx_neg)
+        # left + back  -> moure's cap dreta (vy_neg)
+        # back + right -> moure's cap amunt (vx_pos)   <-- CORRECCIÓ AQUI
+        # right + front -> moure's cap esquerra (vy_pos) <-- CORRECCIÓ AQUI
+        if (present['front'] and present['front_left']) or (present['front'] and present['left']):
+            twist.linear.x = -self.v_lin
             twist.linear.y = 0.0
-            twist.angular.z = self.v_ang * 2.0
-            action = f"FRONT {min_front:.2f} m → turn LEFT"
-
-        #----------------------------------------------------------
-        # RULE 2: FRONT-RIGHT obstacle → slow + left
-        #----------------------------------------------------------
-        elif min_fr_right < self.base_distance:
+            self.current_motion = 'vx_neg'
+            action = f"FRONT+LEFT present -> MOVE DOWN (vx_neg)"
+        elif (present['left'] and present['back_left']) or (present['left'] and present['back']):
             twist.linear.x = 0.0
+            twist.linear.y = -self.v_lin
+            self.current_motion = 'vy_neg'
+            action = f"LEFT+BACK present -> MOVE RIGHT (vy_neg)"
+        elif (present['back'] and present['back_right']) or (present['back'] and present['right']):
+            # back + right -> mover cap amunt (vx_pos)
+            twist.linear.x = self.v_lin
             twist.linear.y = 0.0
-            twist.angular.z = self.v_ang * 2.0
-            action = f"FRONT-RIGHT {min_fr_right:.2f} m → turn LEFT"
+            self.current_motion = 'vx_pos'
+            action = f"BACK+RIGHT present -> MOVE UP (vx_pos)"
+        elif (present['right'] and present['front_right']) or (present['right'] and present['front']):
+            # right + front -> moure's cap esquerra (vy_pos)
+            twist.linear.x = 0.0
+            twist.linear.y = self.v_lin
+            self.current_motion = 'vy_pos'
+            action = f"RIGHT+FRONT present -> MOVE LEFT (vy_pos)"
+        else:
+            # Reglas senzilles per una sola paret present
+            if present['front']:
+                target = self.base_distance
+                error = mins['front'] - target
+                vx = 0.0 if abs(error) <= self.tol else correction_for(error)
+                twist.linear.x = vx
+                twist.linear.y = self.v_lin  # moure's cap esquerra (vy_pos)
+                self.current_motion = 'vy_pos'
+                action = f"FRONT present -> MOVE LEFT (vy_pos), corr Vx={vx:.2f}"
 
-        #----------------------------------------------------------
-        # RULE 3: RIGHT visible → control with tolerance band (no vy)
-        #----------------------------------------------------------
-        elif math.isfinite(min_right):
-            # error > 0 → too far; error < 0 → too close
-            error = min_right - self.base_distance
+            elif present['left']:
+                target = self.base_distance
+                error = mins['left'] - target
+                vy = 0.0 if abs(error) <= self.tol else correction_for(error)
+                twist.linear.x = self.v_lin  # moure's cap amunt/endavant (vx_pos)
+                twist.linear.y = vy
+                self.current_motion = 'vx_pos'
+                action = f"LEFT present -> MOVE UP (vx_pos), corr Vy={vy:.2f}"
 
-            if abs(error) <= self.tol:
-                # Inside band: go straight
-                twist.linear.x = self.v_lin
+            elif present['back']:
+                target = self.base_distance
+                error = mins['back'] - target
+                vx_corr = 0.0 if abs(error) <= self.tol else correction_for(error)
+                # Mourem cap abaix (vx_neg) i ajustem segons error
+                twist.linear.x = -self.v_lin + vx_corr
                 twist.linear.y = 0.0
-                twist.angular.z = 0.0
-                action = (
-                    f"RIGHT ~OK ({min_right:.2f} m, target "
-                    f"{self.base_distance:.2f}±{self.tol:.2f}) → STRAIGHT"
-                )
+                self.current_motion = 'vx_neg'
+                action = f"BACK present -> MOVE DOWN (vx_neg), corr Vx adj {vx_corr:.2f}"
 
-            elif error < 0:
-                # Too close to right wall → slow forward + stronger left turn
-                twist.linear.x = self.v_lin * 0.5
+            elif present['right']:
+                # Quan topa amb la paret a la dreta, segons la correcció feta: moure's cap amunt (vx_pos)
+                target = self.base_distance
+                error = mins['right'] - target
+                vx_adj = 0.0 if abs(error) <= self.tol else correction_for(error)
+                twist.linear.x = self.v_lin + vx_adj  # mover cap amunt (vx_pos) i aplicar correcció en vx
                 twist.linear.y = 0.0
-                twist.angular.z = self.v_ang * 2.0
-                action = (
-                    f"RIGHT too CLOSE ({min_right:.2f} m < "
-                    f"{self.base_distance:.2f}-{self.tol:.2f}) → "
-                    f"forward + strong LEFT turn"
-                )
+                # Nota: si prefereixes que la correcció per pared lateral s'apliqui en Vy, ho podem canviar.
+                self.current_motion = 'vx_pos'
+                action = f"RIGHT present -> MOVE UP (vx_pos), corr Vx adj {vx_adj:.2f}"
 
             else:
-                # Too far from right wall → slow forward + stronger right turn
-                twist.linear.x = self.v_lin * 0.5
-                twist.linear.y = 0.0
-                twist.angular.z = -self.v_ang * 2.0
-                action = (
-                    f"RIGHT too FAR ({min_right:.2f} m > "
-                    f"{self.base_distance:.2f}+{self.tol:.2f}) → "
-                    f"forward + strong RIGHT turn"
-                )
+                # Recovery segons sector més proper (diagonals)
+                if closest_sector == 'back_left':
+                    twist.linear.x = -0.5 * self.v_lin
+                    twist.linear.y = -0.5 * self.v_lin
+                    self.current_motion = 'vx_neg'
+                    action = "RECOVERY: closest back_left -> diagonal down-right"
+                elif closest_sector == 'back_right':
+                    twist.linear.x = -0.5 * self.v_lin
+                    twist.linear.y = 0.5 * self.v_lin
+                    self.current_motion = 'vx_neg'
+                    action = "RECOVERY: closest back_right -> diagonal down-left"
+                elif closest_sector == 'front_left':
+                    twist.linear.x = 0.5 * self.v_lin
+                    twist.linear.y = 0.5 * self.v_lin
+                    self.current_motion = 'vx_pos'
+                    action = "RECOVERY: closest front_left -> diagonal up-left"
+                elif closest_sector == 'front_right':
+                    twist.linear.x = 0.5 * self.v_lin
+                    twist.linear.y = -0.5 * self.v_lin
+                    self.current_motion = 'vx_pos'
+                    action = "RECOVERY: closest front_right -> diagonal up-right"
+                elif closest_sector == 'front':
+                    twist.linear.x = self.v_lin
+                    twist.linear.y = 0.0
+                    self.current_motion = 'vx_pos'
+                    action = "No present walls, but closest FRONT -> MOVE UP"
+                elif closest_sector == 'left':
+                    twist.linear.x = 0.0
+                    twist.linear.y = self.v_lin
+                    self.current_motion = 'vy_pos'
+                    action = "No present walls, but closest LEFT -> MOVE LEFT"
+                elif closest_sector == 'right':
+                    twist.linear.x = 0.0
+                    twist.linear.y = -self.v_lin
+                    self.current_motion = 'vy_neg'
+                    action = "No present walls, but closest RIGHT -> MOVE RIGHT"
+                elif closest_sector == 'back':
+                    twist.linear.x = -self.v_lin
+                    twist.linear.y = 0.0
+                    self.current_motion = 'vx_neg'
+                    action = "No present walls, but closest BACK -> MOVE DOWN"
+                else:
+                    twist = Twist()
+                    action = "No walls visible -> STOP"
 
-        #----------------------------------------------------------
-        # RULE 4: BACK-RIGHT → only if it is the most relevant wall
-        #----------------------------------------------------------
-        elif math.isfinite(min_back_right) and (
-            not math.isfinite(min_right) or min_back_right <= min_right
-        ):
-            twist.linear.x = self.v_lin * 0.1
-            twist.linear.y = 0.0
-            twist.angular.z = -2.0 * self.v_ang
-            action = (
-                f"BACK-RIGHT {min_back_right:.2f} m → "
-                f"very slow + STRONG RIGHT turn (2*w)"
-            )
+        # Limits
+        twist.linear.x = clamp(twist.linear.x, -self.v_lin, self.v_lin)
+        twist.linear.y = clamp(twist.linear.y, -self.v_lin, self.v_lin)
+        twist.angular.z = 0.0
 
-        # if nothing is visible, twist remains zero -> robot stops
-
-        # Update last commanded twist (periodic timer will publish it)
         self.cmd = twist
-
-        # Logging (only on change)
         if action != self._last_action_logged:
-            self.get_logger().info(action if action else "No action (stopped).")
+            self.get_logger().info(action)
             self._last_action_logged = action
+        self._state_action = action
 
-        self._state_action = action if action else "Stopped (no wall detected)"
-
-    #--------------------------------------------------------------------
+    # ---------------------------
     def log_info(self):
         if not self._shutting_down:
             self.get_logger().info(self._state_action)
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -233,9 +291,9 @@ def main(args=None):
             node.destroy_node()
         except Exception:
             pass
-
         if rclpy.ok():
             rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
