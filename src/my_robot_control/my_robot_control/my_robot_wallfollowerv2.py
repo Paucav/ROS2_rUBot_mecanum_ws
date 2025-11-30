@@ -15,10 +15,10 @@ class WallFollower(Node):
         self.declare_parameter('forward_speed', 0.20)    # linear speed
         self.declare_parameter('turn_speed', 0.40)       # angular speed
         self.declare_parameter('time_to_stop', 30.0)     # auto-stop
-        self.declare_parameter('tolerance', 0.05)        # band around base_distance (RIGHT)
+        self.declare_parameter('tolerance', 0.03)        # band around base_distance (RIGHT)
 
         # New parameters for lateral correction (existing change you already have)
-        self.declare_parameter('lat_gain', 0.8)          # gain for linear.y correction (Vy = -lat_gain * error)
+        self.declare_parameter('lat_gain', 0.9)          # gain for linear.y correction (Vy = -lat_gain * error)
         self.declare_parameter('max_lateral', 0.15)     # max absolute lateral speed (m/s)
 
         # NEW (minimal) parameter to help Regla 4 stick to the wall:
