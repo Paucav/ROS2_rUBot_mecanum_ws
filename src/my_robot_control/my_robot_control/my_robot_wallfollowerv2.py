@@ -190,7 +190,7 @@ class WallFollower(Node):
             elif error < 0:
                 # Too close to right wall → slow forward + left lateral move to increase distance
                 twist.linear.x = self.v_lin * 0.5
-                twist.linear.y = vy  # vy will be positive (move left) because error<0
+                twist.linear.y = vy # vy will be positive (move left) because error<0
                 twist.angular.z = self.v_ang * 2.0
                 action = (
                     f"RIGHT too CLOSE ({min_right:.2f} m) → forward + LEFT lateral ({twist.linear.y:.3f}) + strong LEFT turn"
@@ -199,7 +199,7 @@ class WallFollower(Node):
             else:
                 # Too far from right wall → slow forward + right lateral move to decrease distance
                 twist.linear.x = self.v_lin * 0.5
-                twist.linear.y = vy  # vy will be negative (move right) because error>0
+                twist.linear.y = vy*0.5  # vy will be negative (move right) because error>0
                 twist.angular.z = -self.v_ang * 2.0
                 action = (
                     f"RIGHT too FAR ({min_right:.2f} m) → forward + RIGHT lateral ({twist.linear.y:.3f}) + strong RIGHT turn"
@@ -212,7 +212,7 @@ class WallFollower(Node):
         elif math.isfinite(min_back_right) and (
             not math.isfinite(min_right) or min_back_right <= min_right
         ):
-            twist.linear.x = self.v_lin * 0.1
+            twist.linear.x = self.v_lin * 0.5
             # Apply a small lateral movement to the RIGHT (negative y) so the robot stays closer to the wall
             twist.linear.y = -abs(self.back_lateral)
             twist.angular.z = -2.0 * self.v_ang
