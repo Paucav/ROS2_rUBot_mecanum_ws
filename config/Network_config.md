@@ -274,18 +274,24 @@ First of all, a proper Docker Image has been created with the custom configurati
     ````bash
     docker tag ros2-humble-biorobub-pc:latest manelpuig/ros2-humble-biorobub-pc:latest
     ````
-- Login to Docker Hub
+- Login to Docker Hub from terminal and follow instructions to autenticate
+    ````bash
+    docker login
+    ````
 - Push the image to Docker Hub
     ````bash
     docker push manelpuig/ros2-humble-biorobub-pc:latest
     ````
-
+- Once the image is pushed properly to my Dockerhub account, I have to delete the local image tag:
+    ````bash
+    docker rmi ros2-humble-biorobub-pc:latest
+    ````
 Students in the lab they only need to run:
 - Unzip the `ros2-humble-biorobub.zip` file in a /home/user/Desktop/rob folder on Linux PC
 
 - review the:
     - `ROS_DOMAIN_ID` variable in the `docker-compose.yml` file and `Dockerfile` to match your lab setup.
-    - IPs in `cyclonedds_pc.xml` and `cyclonedds_robot.xml` files to match your lab setup.
+    - IPs in `cyclonedds_pc.xml` files to match your lab setup.
 - Open a terminal in the `/home/user/Desktop/rob/ros2-humble-biorobub` folder and run:
     ````bash
     xhost +local:root            # permet X11 per al container
