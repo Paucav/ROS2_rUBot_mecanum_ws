@@ -17,7 +17,7 @@ class WallFollower(Node):
         self.declare_parameter('tolerance', 0.03)        # band around base_distance (RIGHT)
 
         # New parameters for lateral correction (existing change you already have)
-        self.declare_parameter('lat_gain', 0.9)          # gain for linear.y correction (Vy = -lat_gain * error)
+        self.declare_parameter('lat_gain', 1.4) # 0.9          # gain for linear.y correction (Vy = -lat_gain * error)
         self.declare_parameter('max_lateral', 0.15)     # max absolute lateral speed (m/s)
 
         # NEW (minimal) parameter to help Regla 4 stick to the wall:
@@ -125,18 +125,18 @@ class WallFollower(Node):
 
             ang = angle_min + i * angle_inc
 
-            if -20 <= ang <= 20:
+            if -60 <= ang <= 20:
                 FRONT.append(d)
-            elif -70 <= ang < -20:
-                FR_RIGHT.append(d)
-            elif -110 <= ang < -70:
+            #elif -70 <= ang < -20:
+                #FR_RIGHT.append(d)
+            elif -110 <= ang < -60: # -110 / -70
                 RIGHT.append(d)
             elif -160 <= ang < -110:
                 BACK_RIGHT.append(d)
 
         # Minimal distances
         min_front      = min(FRONT)      if FRONT      else float('inf')
-        min_fr_right   = min(FR_RIGHT)   if FR_RIGHT   else float('inf')
+        #min_fr_right   = min(FR_RIGHT)   if FR_RIGHT   else float('inf')
         min_right      = min(RIGHT)      if RIGHT      else float('inf')
         min_back_right = min(BACK_RIGHT) if BACK_RIGHT else float('inf')
 
@@ -155,11 +155,11 @@ class WallFollower(Node):
         #----------------------------------------------------------
         # RULE 2: FRONT-RIGHT obstacle → slow + left
         #----------------------------------------------------------
-        elif min_fr_right < self.base_distance:
-            twist.linear.x = 0.0
-            twist.linear.y = 0.0
-            twist.angular.z = self.v_ang * 1.7
-            action = f"FRONT-RIGHT {min_fr_right:.2f} m → turn LEFT"
+        #elif min_fr_right < self.base_distance:
+        #    twist.linear.x = 0.0
+        #    twist.linear.y = 0.0
+        #    twist.angular.z = self.v_ang * 2.0
+        #    action = f"FRONT-RIGHT {min_fr_right:.2f} m → turn LEFT"
 
         #----------------------------------------------------------
         # RULE 3: RIGHT visible → control with tolerance band (use linear.y)
@@ -197,9 +197,9 @@ class WallFollower(Node):
 
             else:
                 # Too far from right wall → slow forward + right lateral move to decrease distance
-                twist.linear.x = self.v_lin * 0.5
-                twist.linear.y = vy * 0.5  # vy will be negative (move right) because error>0
-                twist.angular.z = -self.v_ang * 2.0
+                twist.linear.x = self.v_lin * 1.0
+                twist.linear.y = vy * 0.7  # vy will be negative (move right) because error>0
+                twist.angular.z = -self.v_ang * 3.0
                 action = (
                     f"RIGHT too FAR ({min_right:.2f} m) → forward + RIGHT lateral ({twist.linear.y:.3f}) + strong RIGHT turn"
                 )

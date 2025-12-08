@@ -29,7 +29,13 @@ class WallFollower(Node):
         self.prev_vx = 0.0
         self.prev_vy = 0.0
         self.front_wall_type = None
-        
+
+        # Front-recovery state: when we detect a frontal obstacle we first
+        # take one small lateral step away from the right wall, then rotate
+        # left until we detect the right wall again.
+        self._front_recovery_active = False
+        self._front_recovery_step_done = False
+
         # ROS 2 entities
         self.subscription = self.create_subscription(
             LaserScan, '/scan', self.laser_callback, qos_profile_sensor_data
@@ -50,7 +56,7 @@ class WallFollower(Node):
         self.start_time_s = self.get_clock().now().nanoseconds * 1e-9
 
         self.get_logger().info(
-            "WallFollower (RIGHT tol, BACK_RIGHT when closest) - differential drive."
+            "WallFollower (RIGHT tol, BACK_RIGHT when closest) - differential drive. Modified to stay parallel to right wall."
         )
 
     #--------------------------------------------------------------------
@@ -98,19 +104,37 @@ class WallFollower(Node):
             pass
 
     #--------------------------------------------------------------------
+    def _normalize_angle_deg(self, ang_deg):
+        """Normalize angle to [-180, 180]."""
+        a = ang_deg
+        while a > 180:
+            a -= 360
+        while a <= -180:
+            a += 360
+        return a
+
+    #--------------------------------------------------------------------
     def laser_callback(self, scan):
-        """Compute control action from LIDAR and update self.cmd."""
+        """Compute control action from LIDAR and update self.cmd.
+
+        Behavior changes made:
+        - Robot should always travel parallel to the right wall (linear.x > 0 when right wall present).
+        - When a front obstacle appears: perform a small lateral move away from the right wall (linear.y > 0) ONCE,
+          then stop forward motion and rotate left until the right wall is seen again; then continue straight.
+        - When the right wall "ends": detect via BACK_RIGHT and perform a diagonal forward+right (vx+, vy-) until
+          the back-right reading indicates the wall is now the relevant measurement.
+        """
         if self._shutting_down:
             return
 
         angle_min = math.degrees(scan.angle_min)
         angle_inc = math.degrees(scan.angle_increment)
 
-        FRONT       = []
-        FR_RIGHT    = []
-        RIGHT       = []
-        BACK_RIGHT  = []
-        BACK        = []
+        FRONT = []
+        FR_RIGHT = []
+        RIGHT = []
+        BACK_RIGHT = []
+        BACK = []
 
         for i, d in enumerate(scan.ranges):
             if not math.isfinite(d):
@@ -118,8 +142,10 @@ class WallFollower(Node):
             if d < scan.range_min or d > scan.range_max:
                 continue
 
-            ang = angle_min + i * angle_inc
+            ang = self._normalize_angle_deg(angle_min + i * angle_inc)
 
+            # Sectors (degrees): FRONT [-20,20], FRONT-RIGHT (-70,-20], RIGHT (-110,-70],
+            # BACK-RIGHT (-160,-110], BACK (>160 or <=-160)
             if -20 <= ang <= 20:
                 FRONT.append(d)
             elif -70 <= ang < -20:
@@ -128,108 +154,135 @@ class WallFollower(Node):
                 RIGHT.append(d)
             elif -160 <= ang < -110:
                 BACK_RIGHT.append(d)
-            elif -160<= ang <-200:
+            elif ang >= 160 or ang <= -160:
                 BACK.append(d)
 
         # Minimal distances
-        min_front      = min(FRONT)      if FRONT      else float('inf')
-        min_fr_right   = min(FR_RIGHT)   if FR_RIGHT   else float('inf')
-        min_right      = min(RIGHT)      if RIGHT      else float('inf')
+        min_front = min(FRONT) if FRONT else float('inf')
+        min_fr_right = min(FR_RIGHT) if FR_RIGHT else float('inf')
+        min_right = min(RIGHT) if RIGHT else float('inf')
         min_back_right = min(BACK_RIGHT) if BACK_RIGHT else float('inf')
-        min_back       = min(BACK) if BACK else float('inf')
+        min_back = min(BACK) if BACK else float('inf')
 
         twist = Twist()
         action = ""
-        # Si ya no hay obstáculo delante, reseteamos el tipo de pared
-        if min_front >= self.base_distance and self.front_wall_type is not None:
+
+        # If front obstacle disappears, reset front recovery state
+        if min_front >= self.base_distance and self._front_recovery_active:
+            self._front_recovery_active = False
+            self._front_recovery_step_done = False
             self.front_wall_type = None
 
         #----------------------------------------------------------
-        # RULE 1: FRONT obstacle → turn left
+        # RULE 1: FRONT obstacle → perform recovery: small lateral step, then rotate left until right wall appears
         #----------------------------------------------------------
         if min_front < self.base_distance:
-            # Si aún no hemos clasificado, lo hacemos UNA sola vez
-            if self.front_wall_type is None:
-                if abs(self.prev_vx) > abs(self.prev_vy):
-                    self.front_wall_type = "horizontal"
-                else:
-                    self.front_wall_type = "vertical"
+            # Start recovery if not already
+            if not self._front_recovery_active:
+                self._front_recovery_active = True
+                self._front_recovery_step_done = False
+                # classify wall orientation once
+                if self.front_wall_type is None:
+                    if abs(self.prev_vx) > abs(self.prev_vy):
+                        self.front_wall_type = "horizontal"
+                    else:
+                        self.front_wall_type = "vertical"
 
-            if self.front_wall_type == "horizontal":
+            # First: a single small lateral move away from the right wall to create space
+            if not self._front_recovery_step_done:
+                # Move laterally + in y (to the left) a bit but do NOT advance in x
                 twist.linear.x = 0.0
-                twist.linear.y = self.v_lin
+                twist.linear.y = self.v_lin * 0.3
                 twist.angular.z = 0.0
-                action = f"FRONT {min_front:.2f} m → STRAFE LEFT (pared horizontal)"
+                self._front_recovery_step_done = True
+                action = (
+                    f"FRONT {min_front:.2f} m → small LATERAL step left to separate from right wall"
+                )
             else:
-                twist.linear.x = -self.v_lin   # por ejemplo, hacia atrás
+                # Then stop forward motion and rotate left until the right wall becomes visible again
+                twist.linear.x = 0.0
                 twist.linear.y = 0.0
-                twist.angular.z = 0.0
-                action = f"FRONT {min_front:.2f} m → BACKWARD (pared vertical)"
+                # rotate left in place
+                twist.angular.z = self.v_ang
+                action = (
+                    f"FRONT {min_front:.2f} m → ROTATING LEFT until right wall detected"
+                )
+
+                # If during rotation we detect the right wall, finish recovery and go straight
+                if math.isfinite(min_right):
+                    # Finish recovery: move forward parallel to right wall
+                    twist.linear.x = self.v_lin
+                    twist.linear.y = 0.0
+                    twist.angular.z = 0.0
+                    self._front_recovery_active = False
+                    self._front_recovery_step_done = False
+                    action = (
+                        f"Recovered from FRONT: right wall at {min_right:.2f} m → STRAIGHT"
+                    )
 
         #----------------------------------------------------------
-        # RULE 2: FRONT-RIGHT obstacle → slow + left
+        # RULE 2: FRONT-RIGHT obstacle (close diagonal front-right) -> gentle diagonal away
+        # This is kept but tuned for the case where robot normally moves forward (vx>0)
         #----------------------------------------------------------
         elif min_fr_right < self.base_distance:
-            twist.linear.x = self.v_lin
-            twist.linear.y = self.v_lin
+            # gentle diagonal forward-left to avoid the corner
+            twist.linear.x = self.v_lin * 0.6
+            twist.linear.y = self.v_lin * 0.3
             twist.angular.z = 0.0
-            action = f"FRONT-RIGHT {min_fr_right:.2f} m → DIAGONAL"
+            action = f"FRONT-RIGHT {min_fr_right:.2f} m → gentle DIAGONAL forward-left"
 
         #----------------------------------------------------------
-        # RULE 3: RIGHT visible → control with tolerance band (no vy)
+        # RULE 3: RIGHT visible → go straight (we want to stay parallel to right wall)
         #----------------------------------------------------------
         elif math.isfinite(min_right):
-            # error > 0 → too far; error < 0 → too close
             error = min_right - self.base_distance
 
             if abs(error) <= self.tol:
-                # Inside band: go straight
+                # Inside band: go straight forward (parallel)
                 twist.linear.x = self.v_lin
                 twist.linear.y = 0.0
                 twist.angular.z = 0.0
                 action = (
-                    f"RIGHT ~OK ({min_right:.2f} m, target "
-                    f"{self.base_distance:.2f}±{self.tol:.2f}) → STRAIGHT"
+                    f"RIGHT ~OK ({min_right:.2f} m) → STRAIGHT parallel to wall"
                 )
 
             elif error < 0:
-                # Too close to right wall → slow forward + stronger left turn
+                # Too close to right wall → back off slightly from the wall while continuing forward
                 twist.linear.x = self.v_lin * 0.5
-                twist.linear.y = self.v_lin * 0.5
+                twist.linear.y = self.v_lin * 0.2  # small left component
                 twist.angular.z = 0.0
                 action = (
-                    f"RIGHT too CLOSE ({min_right:.2f} m < "
-                    f"{self.base_distance:.2f}-{self.tol:.2f}) → "
-                    f"forward + strong LEFT turn"
+                    f"RIGHT too CLOSE ({min_right:.2f} m) → forward + slight LEFT to increase gap"
                 )
 
             else:
-                # Too far from right wall → slow forward + stronger right turn
+                # Too far from right wall → move slightly right while moving forward to get closer
                 twist.linear.x = self.v_lin * 0.5
-                twist.linear.y = - self.v_lin * 0.5
+                twist.linear.y = -self.v_lin * 0.2
                 twist.angular.z = 0.0
                 action = (
-                    f"RIGHT too FAR ({min_right:.2f} m > "
-                    f"{self.base_distance:.2f}+{self.tol:.2f}) → "
-                    f"forward + strong RIGHT turn"
+                    f"RIGHT too FAR ({min_right:.2f} m) → forward + slight RIGHT to reduce gap"
                 )
 
         #----------------------------------------------------------
-        # RULE 4: BACK-RIGHT → only if it is the most relevant wall
+        # RULE 4: RIGHT not visible but BACK-RIGHT visible -> this can indicate the right wall ends ahead;
+        # do a diagonal forward-right (vx+, vy-) to search for the continuation of the wall.
+        # Continue this until a RIGHT reading becomes available or back-right stops being the most relevant.
         #----------------------------------------------------------
         elif math.isfinite(min_back_right) and (
             not math.isfinite(min_right) or min_back_right <= min_right
         ):
-            twist.linear.x = self.v_lin 
-            twist.linear.y = -self.v_lin
+            # Move forward and slightly to the right to follow a wall that continues behind/on the right
+            twist.linear.x = self.v_lin
+            twist.linear.y = -self.v_lin * 0.5
             twist.angular.z = 0.0
             action = (
-                f"BACK-RIGHT {min_back_right:.2f} m → DIAGONAL"
+                f"BACK-RIGHT {min_back_right:.2f} m (no RIGHT) → DIAGONAL forward-right searching for wall"
             )
-            
-        
 
-        # if nothing is visible, twist remains zero -> robot stops
+            # If while doing this we detect RIGHT, then normal following will resume next cycle
+
+        # otherwise: nothing visible -> stop
 
         # Update last commanded twist (periodic timer will publish it)
         self.cmd = twist
@@ -243,10 +296,12 @@ class WallFollower(Node):
 
         self.prev_vx = twist.linear.x
         self.prev_vy = twist.linear.y
+
     #--------------------------------------------------------------------
     def log_info(self):
         if not self._shutting_down:
             self.get_logger().info(self._state_action)
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -263,6 +318,7 @@ def main(args=None):
 
         if rclpy.ok():
             rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
