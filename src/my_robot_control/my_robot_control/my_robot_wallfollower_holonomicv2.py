@@ -148,23 +148,12 @@ class WallFollower(Node):
         # RULE 1: FRONT obstacle → turn left
         #----------------------------------------------------------
         if min_front < self.base_distance:
-            # Si aún no hemos clasificado, lo hacemos UNA sola vez
-            if self.front_wall_type is None:
-                if abs(self.prev_vx) > abs(self.prev_vy):
-                    self.front_wall_type = "horizontal"
-                else:
-                    self.front_wall_type = "vertical"
-
-            if self.front_wall_type == "horizontal":
-                twist.linear.x = 0.0
-                twist.linear.y = self.v_lin
-                twist.angular.z = 0.0
-                action = f"FRONT {min_front:.2f} m → STRAFE LEFT (pared horizontal)"
-            else:
-                twist.linear.x = -self.v_lin   # por ejemplo, hacia atrás
-                twist.linear.y = 0.0
-                twist.angular.z = 0.0
-                action = f"FRONT {min_front:.2f} m → BACKWARD (pared vertical)"
+            twist.linear.x = 0.0
+            twist.linear.y = self.v_lin
+            twist.angular.z = 0.0
+            action = f"FRONT {min_front:.2f} m → STRAFE LEFT (obstáculo)"
+            
+               
 
         #----------------------------------------------------------
         # RULE 2: FRONT-RIGHT obstacle → slow + left

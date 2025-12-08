@@ -5,6 +5,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist
 
+
 class WallFollower(Node):
     def __init__(self):
         super().__init__('wall_follower_node')
@@ -14,14 +15,7 @@ class WallFollower(Node):
         self.declare_parameter('forward_speed', 0.20)    # linear speed
         self.declare_parameter('turn_speed', 0.40)       # angular speed
         self.declare_parameter('time_to_stop', 30.0)     # auto-stop
-        self.declare_parameter('tolerance', 0.03)        # band around base_distance (RIGHT)
-
-        # New parameters for lateral correction (existing change you already have)
-        self.declare_parameter('lat_gain', 1.4) # 0.9          # gain for linear.y correction (Vy = -lat_gain * error)
-        self.declare_parameter('max_lateral', 0.15)     # max absolute lateral speed (m/s)
-
-        # NEW (minimal) parameter to help Regla 4 stick to the wall:
-        self.declare_parameter('back_lateral', 0.08)    # small lateral speed (m/s) applied in Regla 4 (negative y)
+        self.declare_parameter('tolerance', 0.05)        # band around base_distance (RIGHT)
 
         self.base_distance = float(self.get_parameter('distance_limit').value)
         self.v_lin = float(self.get_parameter('forward_speed').value)
@@ -29,13 +23,13 @@ class WallFollower(Node):
         self.time_to_stop = float(self.get_parameter('time_to_stop').value)
         self.tol = float(self.get_parameter('tolerance').value)
 
-        self.lat_gain = float(self.get_parameter('lat_gain').value)
-        self.max_lateral = float(self.get_parameter('max_lateral').value)
-        self.back_lateral = float(self.get_parameter('back_lateral').value)
-
         # Last commanded twist (will be published periodically)
         self.cmd = Twist()
 
+        self.prev_vx = 0.0
+        self.prev_vy = 0.0
+        self.front_wall_type = None
+        
         # ROS 2 entities
         self.subscription = self.create_subscription(
             LaserScan, '/scan', self.laser_callback, qos_profile_sensor_data
@@ -116,6 +110,7 @@ class WallFollower(Node):
         FR_RIGHT    = []
         RIGHT       = []
         BACK_RIGHT  = []
+        BACK        = []
 
         for i, d in enumerate(scan.ranges):
             if not math.isfinite(d):
@@ -125,100 +120,138 @@ class WallFollower(Node):
 
             ang = angle_min + i * angle_inc
 
-            if -60 <= ang <= 20:
+            if -20 <= ang <= 20:
                 FRONT.append(d)
-            #elif -70 <= ang < -20:
-                #FR_RIGHT.append(d)
-            elif -110 <= ang < -60: # -110 / -70
+            elif -70 <= ang < -20:
+                FR_RIGHT.append(d)
+            elif -110 <= ang < -70:
                 RIGHT.append(d)
             elif -160 <= ang < -110:
                 BACK_RIGHT.append(d)
+            elif -160<= ang <-200:
+                BACK.append(d)
 
         # Minimal distances
         min_front      = min(FRONT)      if FRONT      else float('inf')
-        #min_fr_right   = min(FR_RIGHT)   if FR_RIGHT   else float('inf')
+        min_fr_right   = min(FR_RIGHT)   if FR_RIGHT   else float('inf')
         min_right      = min(RIGHT)      if RIGHT      else float('inf')
         min_back_right = min(BACK_RIGHT) if BACK_RIGHT else float('inf')
+        min_back       = min(BACK) if BACK else float('inf')
 
         twist = Twist()
         action = ""
+        # Si ya no hay obstáculo delante, reseteamos el tipo de pared
+        if min_front >= self.base_distance and self.front_wall_type is not None:
+            self.front_wall_type = None
 
         #----------------------------------------------------------
         # RULE 1: FRONT obstacle → turn left
         #----------------------------------------------------------
         if min_front < self.base_distance:
             twist.linear.x = 0.0
-            twist.linear.y = 0.0
-            twist.angular.z = self.v_ang * 2.0
-            action = f"FRONT {min_front:.2f} m → turn LEFT"
-
+            twist.linear.y = self.v_lin
+            twist.angular.z = 0.0
+            action = f"FRONT {min_front:.2f} m → STRAFE LEFT (pared horizontal)"
         #----------------------------------------------------------
         # RULE 2: FRONT-RIGHT obstacle → slow + left
         #----------------------------------------------------------
-        #elif min_fr_right < self.base_distance:
-        #    twist.linear.x = 0.0
-        #    twist.linear.y = 0.0
-        #    twist.angular.z = self.v_ang * 2.0
-        #    action = f"FRONT-RIGHT {min_fr_right:.2f} m → turn LEFT"
+        elif min_fr_right < self.base_distance:
+            twist.linear.x = self.v_lin
+            twist.linear.y = self.v_lin
+            twist.angular.z = 0.0
+            action = f"FRONT-RIGHT {min_fr_right:.2f} m → DIAGONAL"
 
         #----------------------------------------------------------
-        # RULE 3: RIGHT visible → control with tolerance band (use linear.y)
+        # RULE 3: RIGHT visible → control with tolerance band (no vy)
         #----------------------------------------------------------
         elif math.isfinite(min_right):
-            # error > 0 → too far; error < 0 → too close
+            
             error = min_right - self.base_distance
 
-            # Compute lateral correction vy = -lat_gain * error (ROS convention: +y = left)
-            vy = - self.lat_gain * error
+            # compute orientation error (parallel alignment)
+            orient_error = None
+            if math.isfinite(min_fr_right) and math.isfinite(min_back_right):
+                orient_error = min_fr_right - min_back_right   # signo correcto
 
-            # Clamp lateral speed
-            if vy > self.max_lateral:
-                vy = self.max_lateral
-            elif vy < -self.max_lateral:
-                vy = -self.max_lateral
-
+            # -------------------------------
+            # 1) ZONA OK: recto
+            # -------------------------------
             if abs(error) <= self.tol:
-                # Inside band: go straight but apply a small lateral correction to stay parallel
                 twist.linear.x = self.v_lin
-                twist.linear.y = vy
+                twist.linear.y = 0.0
                 twist.angular.z = 0.0
-                action = (
-                    f"RIGHT ~OK ({min_right:.2f} m) → STRAIGHT + Vy={twist.linear.y:.3f}"
-                )
 
+                # aplicar alineación suave si queremos
+                if orient_error is not None and abs(orient_error) > 0.02:
+                    if orient_error < 0:
+                        twist.angular.z = self.v_ang * 0.5  # delantera más cerca → gira derecha
+                        action = f"RIGHT OK DELANTERA CERCA {min_right:.2f} ATRAS {min_back_right:.2f}"
+                    else:
+                        twist.angular.z = -self.v_ang * 0.5  # trasera más cerca → gira izq
+                        action = f"RIGHT OK TRASERA CERCA {min_right:.2f} ATRAS {min_back_right:.2f}"
+                else:
+                    action = f"RIGHT OK {min_right:.2f} ATRAS{min_back_right:.2f}"
+                
+
+
+            # -------------------------------
+            # 2) DEMASIADO CERCA
+            # -------------------------------
             elif error < 0:
-                # Too close to right wall → slow forward + left lateral move to increase distance
                 twist.linear.x = self.v_lin * 0.5
-                twist.linear.y = vy # vy will be positive (move left) because error<0
-                twist.angular.z = self.v_ang * 2.0
-                action = (
-                    f"RIGHT too CLOSE ({min_right:.2f} m) → forward + LEFT lateral ({twist.linear.y:.3f}) + strong LEFT turn"
-                )
+                twist.linear.y = self.v_lin * 0.5   # away from wall
 
-            else:
-                # Too far from right wall → slow forward + right lateral move to decrease distance
-                twist.linear.x = self.v_lin * 1.0
-                twist.linear.y = vy * 0.7  # vy will be negative (move right) because error>0
-                twist.angular.z = -self.v_ang * 3.0
-                action = (
-                    f"RIGHT too FAR ({min_right:.2f} m) → forward + RIGHT lateral ({twist.linear.y:.3f}) + strong RIGHT turn"
-                )
+                # corrección de orientación
+                if orient_error is not None:
+                    if orient_error < 0:
+                        twist.angular.z = self.v_ang * 0.5  # delantera más cerca → derecha
+                        action = f"RIGHT CLOSE DELANTERA CERCA{min_right:.2f}"
+                    else:
+                        twist.angular.z =  -self.v_ang * 0.5   # trasera más cerca → izquierda
+                        action = f"RIGHT CLOSE TRASERA CERCA {min_right:.2f} ATRAS{min_back_right:.2f}"
+                else:
+                    twist.angular.z = 0.0
+                    action = f"RIGHT CLOSE {min_right:.2f}"
+
+            
+
+
+            # -------------------------------
+            # 3) DEMASIADO LEJOS
+            # -------------------------------
+            else:  # error > 0
+                twist.linear.x = self.v_lin * 0.5
+                twist.linear.y = -self.v_lin * 0.5  # hacia la pared
+
+                # corrección de orientación
+                if orient_error is not None:
+                    if orient_error < 0:
+                        twist.angular.z = self.v_ang * 0.5  # delantero más cerca → gira derecha
+                        action = f"RIGHT FAR DELANTERA CERCA {min_right:.2f}"
+                    else:
+                        twist.angular.z =  -self.v_ang * 0.5  # trasero más cerca → izquierda
+                        action = f"RIGHT FAR TRASERA CERCA {min_right:.2f} ATRAS {min_back_right:.2f}"
+                else:
+                    twist.angular.z = 0.0
+                    action = f"RIGHT FAR {min_right:.2f} ATRAS{min_back_right:.2f}"
+
+                
+
 
         #----------------------------------------------------------
         # RULE 4: BACK-RIGHT → only if it is the most relevant wall
-        #          Added small negative Vy to stick closer to the wall while turning.
         #----------------------------------------------------------
         elif math.isfinite(min_back_right) and (
             not math.isfinite(min_right) or min_back_right <= min_right
         ):
-            twist.linear.x = self.v_lin * 0.5
-            # Apply a small lateral movement to the RIGHT (negative y) so the robot stays closer to the wall
-            twist.linear.y = -abs(self.back_lateral)
-            twist.angular.z = -2.0 * self.v_ang
+            twist.linear.x = self.v_lin 
+            twist.linear.y = -self.v_lin
+            twist.angular.z = 0.0
             action = (
-                f"BACK-RIGHT {min_back_right:.2f} m → "
-                f"very slow + STRONG RIGHT turn (2*w) + Vy={twist.linear.y:.3f}"
+                f"BACK-RIGHT {min_back_right:.2f} m → DIAGONAL"
             )
+            
+        
 
         # if nothing is visible, twist remains zero -> robot stops
 
@@ -232,6 +265,8 @@ class WallFollower(Node):
 
         self._state_action = action if action else "Stopped (no wall detected)"
 
+        self.prev_vx = twist.linear.x
+        self.prev_vy = twist.linear.y
     #--------------------------------------------------------------------
     def log_info(self):
         if not self._shutting_down:
