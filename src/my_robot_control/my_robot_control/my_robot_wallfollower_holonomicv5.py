@@ -113,6 +113,10 @@ class WallFollower(Node):
         BACK_RIGHT  = []
         BACK        = []
 
+        FR_LEFT     = []
+        LEFT        = []
+        BACK_LEFT   = []
+
         for i, d in enumerate(scan.ranges):
             if not math.isfinite(d):
                 continue
@@ -137,6 +141,14 @@ class WallFollower(Node):
                 BACK_RIGHT.append(d)
             elif ang <= -160 or ang >= 160:
                 BACK.append(d)
+            
+            # LEFT sectors (simètrics)
+            elif 20 < ang <= 70:
+                FR_LEFT.append(d)
+            elif 70 < ang <= 110:
+                LEFT.append(d)
+            elif 110 < ang < 160:
+                BACK_LEFT.append(d)
 
         # Minimal distances
         min_front      = min(FRONT)      if FRONT      else float('inf')
@@ -144,6 +156,10 @@ class WallFollower(Node):
         min_right      = min(RIGHT)      if RIGHT      else float('inf')
         min_back_right = min(BACK_RIGHT) if BACK_RIGHT else float('inf')
         min_back       = min(BACK) if BACK else float('inf')
+
+        min_fr_left    = min(FR_LEFT)    if FR_LEFT    else float('inf')
+        min_left       = min(LEFT)       if LEFT       else float('inf')
+        min_back_left  = min(BACK_LEFT)  if BACK_LEFT  else float('inf')
 
         twist = Twist()
         action = ""
@@ -154,7 +170,7 @@ class WallFollower(Node):
         #----------------------------------------------------------
         # RULE 1: FRONT obstacle → strafe left (recover)
         #----------------------------------------------------------
-        if min_front < self.base_distance:
+        if min_front < self.base_distance and min_front < min_left:
             twist.linear.x = 0.0
             twist.linear.y = self.v_lin   # strafe left (positive vy)
             twist.angular.z = 0.0
@@ -163,7 +179,7 @@ class WallFollower(Node):
         #----------------------------------------------------------
         # RULE 2: FRONT-RIGHT obstacle → slow + left diagonal forward-left
         #----------------------------------------------------------
-        elif min_fr_right < self.base_distance:
+        elif min_fr_right < self.base_distance and min_fr_right < min_left:
             twist.linear.x = self.v_lin
             twist.linear.y = self.v_lin
             twist.angular.z = 0.0
@@ -177,6 +193,7 @@ class WallFollower(Node):
             math.isfinite(min_right)
             and (not math.isfinite(min_back_right) or min_right < min_back_right)
             and (not math.isfinite(min_back) or min_right < min_back)
+            and min_right < min_left
         ):
 
             # error > 0 → too far; error < 0 → too close
@@ -194,8 +211,8 @@ class WallFollower(Node):
 
             elif error < 0:
                 # Too close to right wall → slow forward + stronger left turn
-                twist.linear.x = self.v_lin * 0.5
-                twist.linear.y = self.v_lin * 0.5
+                twist.linear.x = self.v_lin 
+                twist.linear.y = self.v_lin 
                 twist.angular.z = 0.0
                 action = (
                     f"RIGHT too CLOSE ({min_right:.2f} m < "
@@ -205,8 +222,8 @@ class WallFollower(Node):
 
             else:
                 # Too far from right wall → slow forward + stronger right strafe
-                twist.linear.x = self.v_lin * 0.5
-                twist.linear.y = - self.v_lin * 0.5
+                twist.linear.x = self.v_lin 
+                twist.linear.y = - self.v_lin 
                 twist.angular.z = 0.0
                 action = (
                     f"RIGHT too FAR ({min_right:.2f} m > "
@@ -218,7 +235,10 @@ class WallFollower(Node):
         # RULE 4: BACK-RIGHT → diagonal forward-right (recover)
         # Use when BACK_RIGHT is the most relevant right-side reading
         #----------------------------------------------------------
-        elif math.isfinite(min_back_right) and (not math.isfinite(min_right) or min_back_right <= min_right):
+        elif (math.isfinite(min_back_right) 
+            and (not math.isfinite(min_right) or min_back_right <= min_right)
+            and min_back_right < min_left
+        ):
             twist.linear.x = self.v_lin
             twist.linear.y = -self.v_lin
             twist.angular.z = 0.0
@@ -238,6 +258,31 @@ class WallFollower(Node):
             action = (
                 f"BACK {min_back:.2f} m (< min_right {min_right if math.isfinite(min_right) else 'inf'}) → STRAFE RIGHT (recover from back)"
             )
+        
+        #----------------------------------------------------------
+        # RULE L1: LEFT → move backward (vx -)
+        # Only if RIGHT is not relevant
+        #----------------------------------------------------------
+        elif math.isfinite(min_left) and min_left < self.base_distance and min_left < min_front:
+            twist.linear.x = -self.v_lin
+            twist.linear.y = 0.0
+            twist.angular.z = 0.0
+            action = f"LEFT {min_left:.2f} m → MOVE BACKWARD (vx -)"
+        
+        #----------------------------------------------------------
+        # RULE L2: FR_LEFT → diagonal backward-right (vx - and vy +)
+        # Triggered when LEFT is gone but FR_LEFT detects wall
+        # Only if RIGHT is not relevant
+        #----------------------------------------------------------
+        elif (math.isfinite(min_fr_left) 
+            #and (min_fr_left < self.base_distance) 
+            and (not math.isfinite(min_right) or min_fr_left < min_right)
+            
+        ):
+            twist.linear.x = -self.v_lin
+            twist.linear.y = self.v_lin
+            twist.angular.z = 0.0
+            action = f"FRONT-LEFT {min_fr_left:.2f} m → DIAGONAL BACK-RIGHT (vx - , vy +)"
 
         # if nothing is visible, twist remains zero -> robot stops
 
