@@ -51,7 +51,7 @@ class WallFollower(Node):
         self.start_time_s = self.get_clock().now().nanoseconds * 1e-9
 
         self.get_logger().info(
-            "WallFollower (RIGHT tol). BACK now triggers when min_back < min_right."
+            "WallFollower (dominant-sector logic: all sectors act when dominant)."
         )
 
     #--------------------------------------------------------------------
@@ -100,13 +100,14 @@ class WallFollower(Node):
 
     #--------------------------------------------------------------------
     def laser_callback(self, scan):
-        """Compute control action from LIDAR and update self.cmd."""
+        """Compute control action from LIDAR and update self.cmd using dominant-sector logic."""
         if self._shutting_down:
             return
 
         angle_min = math.degrees(scan.angle_min)
         angle_inc = math.degrees(scan.angle_increment)
 
+        # Sectors: right side (negative angles), symmetric left (positive)
         FRONT       = []
         FR_RIGHT    = []
         RIGHT       = []
@@ -123,14 +124,9 @@ class WallFollower(Node):
             if d < scan.range_min or d > scan.range_max:
                 continue
 
-            ang = angle_min + i * angle_inc
+            ang = angle_min + i * angle_inc  # degrees
 
-            # Define angular sectors (degrees)
-            # FRONT: -20 .. 20
-            # FR_RIGHT: -70 .. -20
-            # RIGHT: -110 .. -70
-            # BACK_RIGHT: -160 .. -110
-            # BACK: ang <= -160 or ang >= 160  (covers the rear)
+            # right-side sectors (negative angles)
             if -20 <= ang <= 20:
                 FRONT.append(d)
             elif -70 <= ang < -20:
@@ -141,160 +137,133 @@ class WallFollower(Node):
                 BACK_RIGHT.append(d)
             elif ang <= -160 or ang >= 160:
                 BACK.append(d)
-            
-            # LEFT sectors (simètrics)
+            # left-side sectors (positive angles, symmetric)
             elif 20 < ang <= 70:
                 FR_LEFT.append(d)
             elif 70 < ang <= 110:
                 LEFT.append(d)
             elif 110 < ang < 160:
                 BACK_LEFT.append(d)
+            # any beam that doesn't fall in the above ranges is ignored
 
-        # Minimal distances
-        min_front      = min(FRONT)      if FRONT      else float('inf')
-        min_fr_right   = min(FR_RIGHT)   if FR_RIGHT   else float('inf')
-        min_right      = min(RIGHT)      if RIGHT      else float('inf')
-        min_back_right = min(BACK_RIGHT) if BACK_RIGHT else float('inf')
-        min_back       = min(BACK) if BACK else float('inf')
+        # Compute minimal distances (inf if no reading)
+        mins = {
+            'front': min(FRONT) if FRONT else float('inf'),
+            'fr_right': min(FR_RIGHT) if FR_RIGHT else float('inf'),
+            'right': min(RIGHT) if RIGHT else float('inf'),
+            'back_right': min(BACK_RIGHT) if BACK_RIGHT else float('inf'),
+            'back': min(BACK) if BACK else float('inf'),
+            'fr_left': min(FR_LEFT) if FR_LEFT else float('inf'),
+            'left': min(LEFT) if LEFT else float('inf'),
+            'back_left': min(BACK_LEFT) if BACK_LEFT else float('inf'),
+        }
 
-        min_fr_left    = min(FR_LEFT)    if FR_LEFT    else float('inf')
-        min_left       = min(LEFT)       if LEFT       else float('inf')
-        min_back_left  = min(BACK_LEFT)  if BACK_LEFT  else float('inf')
+        # Debug log (uncomment for troubleshooting)
+        # self.get_logger().debug(f"mins: {mins}")
+
+        # Find sector with global minimum distance
+        closest_sector, closest_dist = min(mins.items(), key=lambda kv: kv[1])
 
         twist = Twist()
         action = ""
-        # Si ja no hi ha obstáculo davant, resetejem el tipus de paret
-        if min_front >= self.base_distance and self.front_wall_type is not None:
+
+        # Reset front_wall_type if front is no longer close
+        if mins['front'] >= self.base_distance and self.front_wall_type is not None:
             self.front_wall_type = None
 
-        #----------------------------------------------------------
-        # RULE 1: FRONT obstacle → strafe left (recover)
-        #----------------------------------------------------------
-        if min_front < self.base_distance and min_front < min_left:
-            twist.linear.x = 0.0
-            twist.linear.y = self.v_lin   # strafe left (positive vy)
-            twist.angular.z = 0.0
-            action = f"FRONT {min_front:.2f} m → STRAFE LEFT (obstacle)"
+        # If nothing is visible at all -> stop
+        if closest_dist == float('inf'):
+            # no valid beams
+            twist = Twist()
+            action = "No beams -> stop"
+        else:
+            # Decision based on dominant (closest) sector
+            # Now ALL sectors act when dominant and finite (math.isfinite(closest_dist))
 
-        #----------------------------------------------------------
-        # RULE 2: FRONT-RIGHT obstacle → slow + left diagonal forward-left
-        #----------------------------------------------------------
-        elif min_fr_right < self.base_distance and min_fr_right < min_left:
-            twist.linear.x = self.v_lin
-            twist.linear.y = self.v_lin
-            twist.angular.z = 0.0
-            action = f"FRONT-RIGHT {min_fr_right:.2f} m → DIAGONAL FRONT-LEFT"
+            # FRONT: strafe left (vy+)
+            if closest_sector == 'front' and math.isfinite(closest_dist):
+                twist.linear.x = 0.0
+                twist.linear.y = self.v_lin   # strafe left (positive vy)
+                twist.angular.z = 0.0
+                action = f"FRONT {closest_dist:.2f} m (dominant) → STRAFE LEFT"
 
-        #----------------------------------------------------------
-        # RULE 3: RIGHT visible → control with tolerance band (no vy) BUT
-        # only if RIGHT is more relevant than BACK_RIGHT
-        #----------------------------------------------------------
-        elif (
-            math.isfinite(min_right)
-            and (not math.isfinite(min_back_right) or min_right < min_back_right)
-            and (not math.isfinite(min_back) or min_right < min_back)
-            and min_right < min_left
-        ):
-
-            # error > 0 → too far; error < 0 → too close
-            error = min_right - self.base_distance
-
-            if abs(error) <= self.tol:
-                # Inside band: go straight
+            # FRONT-RIGHT: diagonal forward-left (vx +, vy +)
+            elif closest_sector == 'fr_right' and math.isfinite(closest_dist):
                 twist.linear.x = self.v_lin
+                twist.linear.y = self.v_lin
+                twist.angular.z = 0.0
+                action = f"FRONT-RIGHT {closest_dist:.2f} m (dominant) → DIAGONAL FRONT-LEFT"
+
+            # RIGHT: band control (dominant)
+            elif closest_sector == 'right' and math.isfinite(closest_dist):
+                error = closest_dist - self.base_distance
+                if abs(error) <= self.tol:
+                    twist.linear.x = self.v_lin
+                    twist.linear.y = 0.0
+                    twist.angular.z = 0.0
+                    action = f"RIGHT ~OK ({closest_dist:.2f} m) → STRAIGHT"
+                elif error < 0:
+                    # too close
+                    twist.linear.x = self.v_lin
+                    twist.linear.y = self.v_lin
+                    twist.angular.z = 0.0
+                    action = f"RIGHT too CLOSE ({closest_dist:.2f} m) → forward + left"
+                else:
+                    # too far
+                    twist.linear.x = self.v_lin
+                    twist.linear.y = - self.v_lin
+                    twist.angular.z = 0.0
+                    action = f"RIGHT too FAR ({closest_dist:.2f} m) → forward + right strafe"
+
+            # BACK-RIGHT: diagonal forward-right (vx +, vy -)
+            elif closest_sector == 'back_right' and math.isfinite(closest_dist):
+                twist.linear.x = self.v_lin
+                twist.linear.y = -self.v_lin
+                twist.angular.z = 0.0
+                action = f"BACK-RIGHT {closest_dist:.2f} m (dominant) → DIAGONAL FRONT-RIGHT"
+
+            # BACK: strafe right (vy -)
+            elif closest_sector == 'back' and math.isfinite(closest_dist):
+                twist.linear.x = 0.0
+                twist.linear.y = - self.v_lin   # strafe right only
+                twist.angular.z = 0.0
+                action = f"BACK {closest_dist:.2f} m (dominant) → STRAFE RIGHT (recover)"
+
+            # FRONT-LEFT: diagonal backward-right (vx - , vy +)
+            elif closest_sector == 'fr_left' and math.isfinite(closest_dist):
+                twist.linear.x = - self.v_lin
+                twist.linear.y = self.v_lin
+                twist.angular.z = 0.0
+                action = f"FRONT-LEFT {closest_dist:.2f} m (dominant) → DIAGONAL BACK-RIGHT (vx - , vy +)"
+
+            # LEFT: move backward (vx -)
+            elif closest_sector == 'left' and math.isfinite(closest_dist):
+                twist.linear.x = - self.v_lin
                 twist.linear.y = 0.0
                 twist.angular.z = 0.0
-                action = (
-                    f"RIGHT ~OK ({min_right:.2f} m, target "
-                    f"{self.base_distance:.2f}±{self.tol:.2f}) → STRAIGHT"
-                )
+                action = f"LEFT {closest_dist:.2f} m (dominant) → MOVE BACKWARD (vx -)"
 
-            elif error < 0:
-                # Too close to right wall → slow forward + stronger left turn
-                twist.linear.x = self.v_lin 
-                twist.linear.y = self.v_lin 
+            # BACK-LEFT: diagonal back-left
+            elif closest_sector == 'back_left' and math.isfinite(closest_dist):
+                twist.linear.x = - self.v_lin
+                twist.linear.y = - self.v_lin
                 twist.angular.z = 0.0
-                action = (
-                    f"RIGHT too CLOSE ({min_right:.2f} m < "
-                    f"{self.base_distance:.2f}-{self.tol:.2f}) → "
-                    f"forward + strong LEFT turn"
-                )
+                action = f"BACK-LEFT {closest_dist:.2f} m (dominant) → DIAGONAL BACK-LEFT"
 
             else:
-                # Too far from right wall → slow forward + stronger right strafe
-                twist.linear.x = self.v_lin 
-                twist.linear.y = - self.v_lin 
-                twist.angular.z = 0.0
-                action = (
-                    f"RIGHT too FAR ({min_right:.2f} m > "
-                    f"{self.base_distance:.2f}+{self.tol:.2f}) → "
-                    f"forward + strong RIGHT strafe"
-                )
-
-        #----------------------------------------------------------
-        # RULE 4: BACK-RIGHT → diagonal forward-right (recover)
-        # Use when BACK_RIGHT is the most relevant right-side reading
-        #----------------------------------------------------------
-        elif (math.isfinite(min_back_right) 
-            and (not math.isfinite(min_right) or min_back_right <= min_right)
-            and min_back_right < min_left
-        ):
-            twist.linear.x = self.v_lin
-            twist.linear.y = -self.v_lin
-            twist.angular.z = 0.0
-            action = (
-                f"BACK-RIGHT {min_back_right:.2f} m → DIAGONAL FRONT-RIGHT (recover)"
-            )
-
-        #----------------------------------------------------------
-        # RULE 5: BACK visible → move only vy- (strafe right) to recover wall
-        # Now triggers only when rear reading is closer than right reading:
-        # min_back < min_right
-        #----------------------------------------------------------
-        elif math.isfinite(min_back) and (min_back < min_right):
-            twist.linear.x = 0.0
-            twist.linear.y = - self.v_lin   # strafe right only
-            twist.angular.z = 0.0
-            action = (
-                f"BACK {min_back:.2f} m (< min_right {min_right if math.isfinite(min_right) else 'inf'}) → STRAFE RIGHT (recover from back)"
-            )
-        
-        #----------------------------------------------------------
-        # RULE L1: LEFT → move backward (vx -)
-        # Only if RIGHT is not relevant
-        #----------------------------------------------------------
-        elif math.isfinite(min_left) and min_left < self.base_distance and min_left < min_front:
-            twist.linear.x = -self.v_lin
-            twist.linear.y = 0.0
-            twist.angular.z = 0.0
-            action = f"LEFT {min_left:.2f} m → MOVE BACKWARD (vx -)"
-        
-        #----------------------------------------------------------
-        # RULE L2: FR_LEFT → diagonal backward-right (vx - and vy +)
-        # Triggered when LEFT is gone but FR_LEFT detects wall
-        # Only if RIGHT is not relevant
-        #----------------------------------------------------------
-        elif (math.isfinite(min_fr_left) 
-            #and (min_fr_left < self.base_distance) 
-            and (not math.isfinite(min_right) or min_fr_left < min_right)
-            
-        ):
-            twist.linear.x = -self.v_lin
-            twist.linear.y = self.v_lin
-            twist.angular.z = 0.0
-            action = f"FRONT-LEFT {min_fr_left:.2f} m → DIAGONAL BACK-RIGHT (vx - , vy +)"
-
-        # if nothing is visible, twist remains zero -> robot stops
+                # should not happen: fallback stop
+                twist = Twist()
+                action = f"{closest_sector.upper()} {closest_dist:.2f} m dominant but not handled -> STOP"
 
         # Update last commanded twist (periodic timer will publish it)
         self.cmd = twist
 
         # Logging (only on change)
         if action != self._last_action_logged:
-            self.get_logger().info(action if action else "No action (stopped).")
+            self.get_logger().info(action)
             self._last_action_logged = action
 
-        self._state_action = action if action else "Stopped (no wall detected)"
+        self._state_action = action
 
         self.prev_vx = twist.linear.x
         self.prev_vy = twist.linear.y
