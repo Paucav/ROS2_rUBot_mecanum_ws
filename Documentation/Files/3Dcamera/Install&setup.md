@@ -81,7 +81,9 @@ This camera could be installed on:
 - PC Ubuntu 22 with ROS2 Humble
 - Raspberrypi4 Ubuntu 22 with ROS2 Humble
 
-The installation process is the same in both cases.
+The installation process is very simple in both cases.
+
+## PC Ubuntu 22 with ROS2 Humble
 
 Install dependencies:
 ```bash
@@ -119,3 +121,43 @@ ros2 launch orbbec_camera dabai_a.launch.py \
 Best cameras:
 - https://www.orbbec.com/products/tof-camera/femto-bolt/
 - https://www.orbbec.com/products/tof-camera/femto-mega/
+
+## Raspberrypi4 Ubuntu 22 with ROS2 Humble
+
+Download the SDK driver for ARM64 from Orbbec site: 
+- https://github.com/orbbec/OrbbecSDK/releases
+- https://github.com/orbbec/OrbbecSDK
+
+- Copy the contents of SDK driver on home custom folder:
+```bash
+mkdir -p ~/orbbec_sdk
+cp -r OrbbecViewer_v1.10.27_202509260950_arm64_release/* ~/orbbec_sdk/
+````
+- Execute the viewer to test the camera:
+```bash
+cd ~/orbbec_sdk
+./OrbbecViewer
+````
+- Create udev rules (to run without sudo):
+```bash
+cd ~/orbbec_sdk/script
+chmod +x install_udev_rules.sh
+sudo ./install_udev_rules.sh
+```
+
+Install from source the ROS2 wrapper: https://github.com/orbbec/ros2_orbbec_camera.git
+- Install ROS2 wrapper as in PC Ubuntu 22 section and launch with:
+```bash
+mkdir -p ~/ros2_orbbec_ws/src
+cd ~/ros2_orbbec_ws/src
+git clone https://github.com/orbbec/ros2_orbbec_camera.git
+cd ..
+colcon build --symlink-install
+source install/setup.bash
+```
+- Launch with:
+```bash
+ros2 launch ros2_orbbec_camera dabai_a.launch.py
+ros2 launch orbbec_camera gemini2.launch.py
+ros2 launch orbbec_camera astra2.launch.py
+```
