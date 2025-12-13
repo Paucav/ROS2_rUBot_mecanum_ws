@@ -40,6 +40,7 @@ class RobotStopOnObstacle(Node):
         # Publica la comanda actual de moviment (linear.x, angular.z)
         self._cmdVel.publish(self._msg)
 
+
     def laser_callback(self, scan):
         # Busquem la distància mínima en el rang
         valid_distances = [
@@ -52,9 +53,6 @@ class RobotStopOnObstacle(Node):
 
         closest = min(valid_distances)
 
-        # DEBUG opcional
-        self.get_logger().info(f"Distància mínima: {closest:.2f} m")
-
         if closest < self._distanceLimit:
             # ATURAR robot
             self._msg.linear.x = 0.0
@@ -63,6 +61,13 @@ class RobotStopOnObstacle(Node):
             # Manté moviment endavant
             self._msg.linear.x = self._forwardSpeed
             self._msg.angular.z = 0.0
+        
+        # Log conjunt: distància mínima + velocitat actual
+        self.get_logger().info(
+            f"Min distance: {closest:.2f} m | "
+            f"Vx: {self._msg.linear.x:.2f} m/s "
+            
+        )
 
 def main(args=None):
     rclpy.init(args=args)
