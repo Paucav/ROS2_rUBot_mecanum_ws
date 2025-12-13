@@ -94,7 +94,7 @@ sudo apt install libgflags-dev nlohmann-json3-dev libgoogle-glog-dev \
 Clone the ROS2 package in your workspace:
 ```bash
 cd ~/ROS2_rUBot_mecanum_ws/src
-git clone --branch v2-main https://github.com/orbbec/OrbbecSDK_ROS2.git
+git clone --branch main https://github.com/orbbec/OrbbecSDK_ROS2.git
 cd ..
 rosdep install --from-paths src --ignore-src -r -y
 colcon build
@@ -108,11 +108,11 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 Launch:
 ```bash
-ros2 launch orbbec_camera dabai_a.launch.py
+ros2 launch orbbec_camera dabai.launch.py
 ```
 Or with custom parameters:
 ```bash
-ros2 launch orbbec_camera dabai_a.launch.py \
+ros2 launch orbbec_camera dabai.launch.py \
   color_width:=640  color_height:=480  color_fps:=15 \
   depth_width:=640  depth_height:=480  depth_fps:=15 \
   enable_point_cloud:=false
@@ -126,7 +126,6 @@ Best cameras:
 
 Download the SDK driver for ARM64 from Orbbec site: 
 - https://github.com/orbbec/OrbbecSDK/releases
-- https://github.com/orbbec/OrbbecSDK
 
 - Copy the contents of SDK driver on home custom folder:
 ```bash
@@ -161,3 +160,45 @@ ros2 launch ros2_orbbec_camera dabai_a.launch.py
 ros2 launch orbbec_camera gemini2.launch.py
 ros2 launch orbbec_camera astra2.launch.py
 ```
+
+# Program test
+To test if the camera is working properly, you can:
+- Start the camera:
+  ```bash
+  ros2 launch orbbec_camera dabai.launch.py
+  ```
+- review the topics:
+  ```bash
+  ros2 topic list
+  ```
+- review the info of image topics:
+  ```bash
+  ros2 topic info /camera/color/image_raw/compressed
+  ros2 topic info /camera/depth/image_rect_raw/compressedDepth
+  ```
+- review the hz and bw of image topics:
+  ```bash
+  ros2 run topic_tools hz /camera/color/image_raw/compressed
+  ros2 run topic_tools bw /camera/color/image_raw/compressed
+  ros2 run topic_tools hz /camera/depth/image_rect_raw/compressedDepth
+  ros2 run topic_tools bw /camera/depth/image_rect_raw/compressedDepth
+  ```
+- Create a simple Python node that subscribes to the topics:
+    - /camera/color/image_raw/compressed
+    - /camera/depth/image_rect_raw/compressedDepth
+- Execute this node:
+  ```bash
+  chmod +x compressed_image_subscriber.py
+  ./compressed_image_subscriber.py
+  ```
+- Use `rqt_image_view` to visualize the topics:
+  ```bash
+  ros2 run rqt_image_view rqt_image_view
+  ``` 
+  - Select topic: `/camera/color/image_raw` → Transport: `compressed`
+
+  - Select topic: `/camera/depth/image_rect_raw` → Transport: `compressedDepth`
+- Verify the clocks are sync:
+  ```bash
+  timedatectl
+  ```
