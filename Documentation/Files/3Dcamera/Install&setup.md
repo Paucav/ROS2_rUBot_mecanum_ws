@@ -91,13 +91,13 @@ sudo apt install libgflags-dev nlohmann-json3-dev libgoogle-glog-dev \
      ros-humble-image-transport ros-humble-camera-info-manager \
      ros-humble-image-publisher libusb-1.0-0-dev libeigen3-dev
 ```
-Clone the ROS2 package in your workspace:
+Clone the ROS2 package in your workspace (the correct branch is main):
 ```bash
 cd ~/ROS2_rUBot_mecanum_ws/src
 git clone --branch main https://github.com/orbbec/OrbbecSDK_ROS2.git
 cd ..
 rosdep install --from-paths src --ignore-src -r -y
-colcon build
+colcon build --symlink-install
 source install/setup.bash
 ```
 Define the UDEV rules:
@@ -151,6 +151,7 @@ mkdir -p ~/ros2_orbbec_ws/src
 cd ~/ros2_orbbec_ws/src
 git clone https://github.com/orbbec/ros2_orbbec_camera.git
 cd ..
+rosdep install --from-paths src --ignore-src -r -y
 colcon build --symlink-install
 source install/setup.bash
 ```
@@ -165,7 +166,10 @@ ros2 launch orbbec_camera astra2.launch.py
 To test if the camera is working properly, you can:
 - Start the camera:
   ```bash
-  ros2 launch orbbec_camera dabai.launch.py
+  ros2 launch orbbec_camera dabai.launch.py \
+  enable_ir:=false \
+  depth_width:=640 depth_height:=400 depth_fps:=15 \
+  color_width:=640 color_height:=480 color_fps:=15
   ```
 - review the topics:
   ```bash
@@ -201,4 +205,10 @@ To test if the camera is working properly, you can:
 - Verify the clocks are sync:
   ```bash
   timedatectl
+  ```
+- Activate the NTP, chrony if necessary:
+  ```bash
+  sudo timedatectl set-ntp true
+  sudo systemctl restart chrony
+  chronyc tracking
   ```

@@ -17,9 +17,9 @@ class NavigationTask(Node):
         self.navigator = BasicNavigator()
 
         # Declare parameters
-        self.declare_parameter('initial_pose', '(0.0, 0.0, 0.0)')
+        self.declare_parameter('initial_pose', '(0.0,0.0,0.0)')
         self.declare_parameter('waypoints', '[]')
-        self.declare_parameter('final_pose', '(0.0, 0.0, 0.0)')
+        self.declare_parameter('final_pose', '(0.0,0.0,0.0)')
 
         # Read parameters
         initial_pose_str = self.get_parameter('initial_pose').value
